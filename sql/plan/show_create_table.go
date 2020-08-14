@@ -155,15 +155,8 @@ func (i *showCreateTablesIter) produceCreateTableStatement(table sql.Table) (str
 			stmt = fmt.Sprintf("%s NOT NULL", stmt)
 		}
 
-		switch def := col.Default.(type) {
-		case string:
-			if def != "" {
-				stmt = fmt.Sprintf("%s DEFAULT %q", stmt, def)
-			}
-		default:
-			if def != nil {
-				stmt = fmt.Sprintf("%s DEFAULT %v", stmt, col.Default)
-			}
+		if col.Default != nil {
+			stmt = fmt.Sprintf("%s DEFAULT %s", stmt, col.Default.String())
 		}
 
 		if col.Comment != "" {

@@ -88,7 +88,7 @@ func (s *ShowColumns) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error
 
 		var defaultVal string
 		if col.Default != nil {
-			defaultVal = fmt.Sprint(col.Default)
+			defaultVal = col.Default.String()
 		}
 
 		// TODO: rather than lower-casing here, we should lower-case the String() method of types

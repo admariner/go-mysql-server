@@ -12,6 +12,7 @@ import (
 )
 
 func TestShowIndexes(t *testing.T) {
+	ctx := sql.NewEmptyContext()
 	unresolved := NewShowIndexes(NewUnresolvedTable("table-test", ""))
 	require.False(t, unresolved.Resolved())
 	require.Equal(t, []sql.Node{NewUnresolvedTable("table-test", "")}, unresolved.Children())
@@ -28,7 +29,7 @@ func TestShowIndexes(t *testing.T) {
 			table: memory.NewTable(
 				"test1",
 				sql.Schema{
-					&sql.Column{Name: "foo", Type: sql.Int32, Source: "test1", Default: int32(0), Nullable: false},
+					&sql.Column{Name: "foo", Type: sql.Int32, Source: "test1", Default: sql.MustStringToColumnDefaultValue(ctx, "0"), Nullable: false},
 				},
 			),
 		},
@@ -37,8 +38,8 @@ func TestShowIndexes(t *testing.T) {
 			table: memory.NewTable(
 				"test2",
 				sql.Schema{
-					&sql.Column{Name: "bar", Type: sql.Int64, Source: "test2", Default: int64(0), Nullable: true},
-					&sql.Column{Name: "rab", Type: sql.Int64, Source: "test2", Default: int32(0), Nullable: false},
+					&sql.Column{Name: "bar", Type: sql.Int64, Source: "test2", Default: sql.MustStringToColumnDefaultValue(ctx, "0"), Nullable: true},
+					&sql.Column{Name: "rab", Type: sql.Int64, Source: "test2", Default: sql.MustStringToColumnDefaultValue(ctx, "0"), Nullable: false},
 				},
 			),
 		},
@@ -47,9 +48,9 @@ func TestShowIndexes(t *testing.T) {
 			table: memory.NewTable(
 				"test3",
 				sql.Schema{
-					&sql.Column{Name: "baz", Type: sql.Text, Source: "test3", Default: "", Nullable: false},
-					&sql.Column{Name: "zab", Type: sql.Int32, Source: "test3", Default: int32(0), Nullable: true},
-					&sql.Column{Name: "bza", Type: sql.Int64, Source: "test3", Default: int64(0), Nullable: true},
+					&sql.Column{Name: "baz", Type: sql.Text, Source: "test3", Default: sql.MustStringToColumnDefaultValue(ctx, `""`), Nullable: false},
+					&sql.Column{Name: "zab", Type: sql.Int32, Source: "test3", Default: sql.MustStringToColumnDefaultValue(ctx, "0"), Nullable: true},
+					&sql.Column{Name: "bza", Type: sql.Int64, Source: "test3", Default: sql.MustStringToColumnDefaultValue(ctx, "0"), Nullable: true},
 				},
 			),
 		},
@@ -58,7 +59,7 @@ func TestShowIndexes(t *testing.T) {
 			table: memory.NewTable(
 				"test4",
 				sql.Schema{
-					&sql.Column{Name: "oof", Type: sql.Text, Source: "test4", Default: "", Nullable: false},
+					&sql.Column{Name: "oof", Type: sql.Text, Source: "test4", Default: sql.MustStringToColumnDefaultValue(ctx, `""`), Nullable: false},
 				},
 			),
 		},
@@ -92,7 +93,6 @@ func TestShowIndexes(t *testing.T) {
 			showIdxs := NewShowIndexes(NewResolvedTable(test.table))
 			showIdxs.(*ShowIndexes).IndexesToShow = []sql.Index{idx}
 
-			ctx := sql.NewEmptyContext()
 			rowIter, err := showIdxs.RowIter(ctx, nil)
 			assert.NoError(t, err)
 

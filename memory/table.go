@@ -461,8 +461,8 @@ func (t *Table) AddColumn(ctx *sql.Context, column *sql.Column, order *sql.Colum
 	}
 
 	t.schema = newSch
-	// TODO: only do if the column is declared not null?
-	t.insertValueInRows(newColIdx, column.Default)
+	// TODO: each row must separately evaluate the default
+	t.insertValueInRows(newColIdx, column.Default.MustEval(ctx))
 	return nil
 }
 

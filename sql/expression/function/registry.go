@@ -7,6 +7,17 @@ import (
 	"github.com/liquidata-inc/go-mysql-server/sql/expression/function/aggregation"
 )
 
+func init() {
+	// This is to prevent import cycles. Since the sql package cannot reference the function package, we have to
+	// push all of the built in functions to a global that will be referenced from within the sql package. Otherwise,
+	// we'd need to duplicate a lot of code or split up sql into smaller packages. If a better way is found, then feel
+	// free to replace this.
+	err := sql.ColumnDefaultManager.AllowedDefaultFunctions.Register(Defaults...)
+	if err != nil {
+		panic(err) // this should never happen
+	}
+}
+
 func connIDFuncLogic(ctx *sql.Context, _ sql.Row) (interface{}, error) {
 	return ctx.ID(), nil
 }

@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/liquidata-inc/vitess/go/vt/sqlparser"
 	"github.com/opentracing/opentracing-go"
 	"gopkg.in/src-d/go-errors.v1"
-	"github.com/liquidata-inc/vitess/go/vt/sqlparser"
 
 	"github.com/liquidata-inc/go-mysql-server/sql"
 	"github.com/liquidata-inc/go-mysql-server/sql/expression"
@@ -53,6 +53,13 @@ var (
 )
 
 var describeSupportedFormats = []string{"tree"}
+
+func init() {
+	// This is to prevent import cycles. Since the sql package cannot reference the parse package, we have to
+	// push the required function to a global that will be referenced from within the sql package. Otherwise, we'd need to
+	// duplicate a lot of code. If a better way is found, then feel free to replace this.
+	sql.ColumnDefaultManager.ParseDefaultString = DefaultStringToExpression
+}
 
 // These constants aren't exported from vitess for some reason. This could be removed if we changed this.
 const (
@@ -978,22 +985,19 @@ func columnDefinitionToColumn(ctx *sql.Context, cd *sqlparser.ColumnDefinition, 
 		comment = string(cd.Type.Comment.Val)
 	}
 
-	var defaultVal interface{}
+	var defaultVal *sql.ColumnDefaultValue
 	if cd.Type.Default != nil {
-		dflt, err := exprToExpression(ctx, cd.Type.Default)
+		parsedExpr, err := exprToExpression(ctx, cd.Type.Default)
 		if err != nil {
 			return nil, err
 		}
-
-		// TODO: this isn't quite right -- some default expressions here (like function calls) need to be stored by the
-		//  implementor and deferred until row insertion time. We can't do that, but we can at least do a better job
-		//  detecting when this happens and erroring out.
-		if !dflt.Resolved() {
-			return nil, sql.ErrUnsupportedDefault.New(dflt.String())
-		}
-		defaultVal, err = dflt.Eval(ctx, nil)
+		// The literal and expression distinction seems to be decided by the presence of parentheses, even for defaults like NOW() vs (NOW())
+		_, isExpr := cd.Type.Default.(*sqlparser.ParenExpr)
+		// A literal will never have children, thus we can also check for that.
+		isExpr = isExpr || len(parsedExpr.Children()) != 0
+		defaultVal, err = sql.ExpressionToColumnDefaultValue(ctx, parsedExpr, !isExpr)
 		if err != nil {
-			return nil, ErrUnsupportedFeature.New("column defaults must be evaluable at schema modification time")
+			return nil, err
 		}
 	}
 
@@ -1352,6 +1356,28 @@ func selectExprsToExpressions(ctx *sql.Context, se sqlparser.SelectExprs) ([]sql
 	}
 
 	return exprs, nil
+}
+
+// DefaultStringToExpression parses a default value string into an expression (no functions nor columns are resolved).
+func DefaultStringToExpression(ctx *sql.Context, e string) (sql.Expression, error) {
+	// all valid default expressions will parse correctly with SELECT prepended, as the parser will not parse raw expressions
+	stmt, err := sqlparser.Parse("SELECT " + e)
+	if err != nil {
+		return nil, err
+	}
+	//TODO: change these from fmt.Errorf
+	parserSelect, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		return nil, fmt.Errorf("DefaultStringToExpression expected sqlparser.Select but received %T", stmt)
+	}
+	if len(parserSelect.SelectExprs) != 1 {
+		return nil, fmt.Errorf("default string does not have only one expression")
+	}
+	aliasedExpr, ok := parserSelect.SelectExprs[0].(*sqlparser.AliasedExpr)
+	if !ok {
+		return nil, fmt.Errorf("DefaultStringToExpression expected *sqlparser.AliasedExpr but received %T", parserSelect.SelectExprs[0])
+	}
+	return exprToExpression(ctx, aliasedExpr.Expr)
 }
 
 func exprToExpression(ctx *sql.Context, e sqlparser.Expr) (sql.Expression, error) {
