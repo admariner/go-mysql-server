@@ -106,11 +106,11 @@ func NewMod(left, right sql.Expression) *Arithmetic {
 }
 
 func (a *Arithmetic) String() string {
-	return fmt.Sprintf("%s %s %s", a.Left, a.Op, a.Right)
+	return fmt.Sprintf("(%s %s %s)", a.Left, a.Op, a.Right)
 }
 
 func (a *Arithmetic) DebugString() string {
-	return fmt.Sprintf("%s %s %s", sql.DebugString(a.Left), a.Op, sql.DebugString(a.Right))
+	return fmt.Sprintf("(%s %s %s)", sql.DebugString(a.Left), a.Op, sql.DebugString(a.Right))
 }
 
 // IsNullable implements the sql.Expression interface.
@@ -162,7 +162,7 @@ func isInterval(expr sql.Expression) bool {
 }
 
 // WithChildren implements the Expression interface.
-func (a *Arithmetic) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (a *Arithmetic) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(a, len(children), 2)
 	}
@@ -594,7 +594,7 @@ func (e *UnaryMinus) String() string {
 }
 
 // WithChildren implements the Expression interface.
-func (e *UnaryMinus) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (e *UnaryMinus) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 1 {
 		return nil, sql.ErrInvalidChildrenNumber.New(e, len(children), 1)
 	}

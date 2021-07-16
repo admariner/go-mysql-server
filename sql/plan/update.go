@@ -49,8 +49,15 @@ func getUpdatable(node sql.Node) (sql.UpdatableTable, error) {
 		return getUpdatable(node.ResolvedTable)
 	case *ResolvedTable:
 		return getUpdatableTable(node.Table)
+	case *SubqueryAlias:
+		return nil, ErrUpdateNotSupported.New()
+	case *TriggerExecutor:
+		return getUpdatable(node.Left())
 	case sql.TableWrapper:
 		return getUpdatableTable(node.Underlying())
+	}
+	if len(node.Children()) > 1 {
+		return nil, ErrUpdateNotSupported.New()
 	}
 	for _, child := range node.Children() {
 		updater, _ := getUpdatable(child)
@@ -209,14 +216,14 @@ func newUpdateIter(
 	schema sql.Schema,
 	updater sql.RowUpdater,
 	checks sql.CheckConstraints,
-) *updateIter {
-	return &updateIter{
+) sql.RowIter {
+	return NewTableEditorIter(ctx, updater, &updateIter{
 		childIter: childIter,
 		updater:   updater,
 		schema:    schema,
 		checks:    checks,
 		ctx:       ctx,
-	}
+	})
 }
 
 // RowIter implements the Node interface.

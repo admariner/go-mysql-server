@@ -25,6 +25,10 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
+func newDefaultLikeMatcher(likeStr string) (regex.DisposableMatcher, error) {
+	return regex.NewDisposableMatcher("go", likeStr)
+}
+
 // Like performs pattern matching against two strings.
 type Like struct {
 	BinaryExpression
@@ -68,18 +72,21 @@ func (l *Like) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 		return nil, err
 	}
 
-	var (
-		matcher  regex.Matcher
-		disposer regex.Disposer
-	)
+	createMatcher := newDefaultLikeMatcher
+	lType := l.Left.Type()
+	lm, likeOK := lType.(sql.LikeMatcher)
+	if likeOK {
+		createMatcher = lm.CreateMatcher
+	}
 
+	var likeMatcher regex.DisposableMatcher
 	if !l.cached {
 		// for non-cached regex every time create a new matcher
 		right, rerr := l.evalRight(ctx, row)
 		if rerr != nil {
 			return nil, rerr
 		}
-		matcher, disposer, err = regex.New("go", *right)
+		likeMatcher, err = createMatcher(*right)
 	} else {
 		l.once.Do(func() {
 			right, err := l.evalRight(ctx, row)
@@ -88,25 +95,24 @@ func (l *Like) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 					if err != nil || right == nil {
 						return matcherErrTuple{nil, err}
 					}
-					r, _, e := regex.New("go", *right)
-					return matcherErrTuple{r, e}
+					m, e := createMatcher(*right)
+					return matcherErrTuple{m, e}
 				},
 			}
 		})
 		rwe := l.pool.Get().(matcherErrTuple)
-		matcher, err = rwe.matcher, rwe.err
+		likeMatcher, err = rwe.matcher, rwe.err
 	}
 
-	if matcher == nil {
+	if err != nil {
 		return nil, err
 	}
 
-	ok := matcher.Match(left.(string))
+	ok := likeMatcher.Match(left.(string))
 	if !l.cached {
-		disposer.Dispose()
+		likeMatcher.Dispose()
 	} else {
-		l.pool.Put(matcherErrTuple{matcher, nil})
-
+		l.pool.Put(matcherErrTuple{likeMatcher, nil})
 	}
 
 	return ok, nil
@@ -133,7 +139,7 @@ func (l *Like) String() string {
 }
 
 // WithChildren implements the Expression interface.
-func (l *Like) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (l *Like) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(l, len(children), 2)
 	}

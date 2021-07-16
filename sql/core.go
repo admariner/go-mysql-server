@@ -64,7 +64,7 @@ type Expression interface {
 	// It will return an error if the number of children is different than
 	// the current number of children. They must be given in the same order
 	// as they are returned by Children.
-	WithChildren(children ...Expression) (Expression, error)
+	WithChildren(ctx *Context, children ...Expression) (Expression, error)
 }
 
 // FunctionExpression is an Expression that represents a function.
@@ -104,6 +104,8 @@ type Aggregation interface {
 // index given on demand.
 type WindowAggregation interface {
 	Expression
+	// Window returns this expression's window
+	Window() *Window
 	// WithWindow returns a version of this window aggregation with the window given
 	WithWindow(window *Window) (WindowAggregation, error)
 	// NewBuffer creates a new buffer and returns it as a Row. This buffer will be provided for all further operations.
@@ -169,12 +171,6 @@ type OpaqueNode interface {
 	Opaque() bool
 }
 
-// AsyncNode is a node that can be executed asynchronously.
-type AsyncNode interface {
-	// IsAsync reports whether the node is async or not.
-	IsAsync() bool
-}
-
 // Expressioner is a node that contains expressions.
 type Expressioner interface {
 	// Expressions returns the list of expressions contained by the node.
@@ -215,6 +211,10 @@ type Table interface {
 	PartitionRows(*Context, Partition) (RowIter, error)
 }
 
+type TemporaryTable interface {
+	IsTemporary() bool
+}
+
 // TableWrapper is a node that wraps the real table. This is needed because
 // wrappers cannot implement some methods the table may implement.
 type TableWrapper interface {
@@ -233,7 +233,7 @@ type PartitionCounter interface {
 type FilteredTable interface {
 	Table
 	HandledFilters(filters []Expression) []Expression
-	WithFilters(filters []Expression) Table
+	WithFilters(ctx *Context, filters []Expression) Table
 }
 
 // ProjectedTable is a table that can produce a specific RowIter
@@ -345,6 +345,20 @@ type CheckAlterableTable interface {
 	DropCheck(ctx *Context, chName string) error
 }
 
+// TableEditor is the base interface for sub interfaces that can update rows in a table during an INSERT, REPLACE,
+// UPDATE, or DELETE statement.
+type TableEditor interface {
+	// StatementBegin is called before the first operation of a statement. Integrators should mark the state of the data
+	// in some way that it may be returned to in the case of an error.
+	StatementBegin(ctx *Context)
+	// DiscardChanges is called if a statement encounters an error, and all current changes since the statement beginning
+	// should be discarded.
+	DiscardChanges(ctx *Context, errorEncountered error) error
+	// StatementComplete is called after the last operation of the statement, indicating that it has successfully completed.
+	// The mark set in StatementBegin may be removed, and a new one should be created on the next StatementBegin.
+	StatementComplete(ctx *Context) error
+}
+
 // InsertableTable is a table that can process insertion of new rows.
 type InsertableTable interface {
 	Table
@@ -355,6 +369,7 @@ type InsertableTable interface {
 
 // RowInserter is an insert cursor that can insert one or more values to a table.
 type RowInserter interface {
+	TableEditor
 	// Insert inserts the row given, returning an error if it cannot. Insert will be called once for each row to process
 	// for the insert operation, which may involve many rows. After all rows in an operation have been processed, Close
 	// is called.
@@ -373,6 +388,7 @@ type DeletableTable interface {
 
 // RowDeleter is a delete cursor that can delete one or more rows from a table.
 type RowDeleter interface {
+	TableEditor
 	// Delete deletes the given row. Returns ErrDeleteRowNotFound if the row was not found. Delete will be called once for
 	// each row to process for the delete operation, which may involve many rows. After all rows have been processed,
 	// Close is called.
@@ -396,10 +412,14 @@ type TruncateableTable interface {
 // and AUTO_INCREMENT column in their schema.
 type AutoIncrementTable interface {
 	Table
-	// GetAutoIncrementValue gets the next AUTO_INCREMENT value.
-	// Implementations are responsible for updating their
-	// state to provide the correct values.
-	GetAutoIncrementValue(*Context) (interface{}, error)
+	// PeekNextAutoIncrementValue returns the expected next AUTO_INCREMENT value but does not require
+	// implementations to update their state.
+	PeekNextAutoIncrementValue(*Context) (interface{}, error)
+	// GetNextAutoIncrementValue gets the next AUTO_INCREMENT value. In the case that a table with an autoincrement
+	// column is passed in a row with the autoinc column failed, the next auto increment value must
+	// update its internal state accordingly and use the insert val at runtime.
+	//Implementations are responsible for updating their state to provide the correct values.
+	GetNextAutoIncrementValue(ctx *Context, insertVal interface{}) (interface{}, error)
 	// AutoIncrementSetter returns an AutoIncrementSetter.
 	AutoIncrementSetter(*Context) AutoIncrementSetter
 }
@@ -423,6 +443,7 @@ type Closer interface {
 // TODO: We can't embed those interfaces because go 1.13 doesn't allow for overlapping interfaces (they both declare
 //  Close). Go 1.14 fixes this problem, but we aren't ready to drop support for 1.13 yet.
 type RowReplacer interface {
+	TableEditor
 	// Insert inserts the row given, returning an error if it cannot. Insert will be called once for each row to process
 	// for the replace operation, which may involve many rows. After all rows in an operation have been processed, Close
 	// is called.
@@ -453,10 +474,33 @@ type UpdatableTable interface {
 
 // RowUpdater is an update cursor that can update one or more rows in a table.
 type RowUpdater interface {
+	TableEditor
 	// Update the given row. Provides both the old and new rows.
 	Update(ctx *Context, old Row, new Row) error
 	// Close finalizes the update operation, persisting the result.
 	Closer
+}
+
+// DatabaseProvider is a collection of Database.
+type DatabaseProvider interface {
+	// Database gets a Database from the provider.
+	Database(name string) (Database, error)
+
+	// HasDatabase checks if the Database exists in the provider.
+	HasDatabase(name string) bool
+
+	// AllDatabases returns a slice of all Databases in the provider.
+	AllDatabases() []Database
+}
+
+type MutableDatabaseProvider interface {
+	DatabaseProvider
+
+	// AddDatabase adds a new Database to the provider's collection.
+	AddDatabase(db Database)
+
+	// DropDatabase removes a database from the providers's collection.
+	DropDatabase(name string)
 }
 
 // Database represents the database.
@@ -469,8 +513,16 @@ type Database interface {
 	// strategy is not defined.
 	GetTableInsensitive(ctx *Context, tblName string) (Table, bool, error)
 
-	// GetTableNames returns the table names of every table in the database
+	// GetTableNames returns the table names of every table in the database. It does not return the names of temporary
+	// tables
 	GetTableNames(ctx *Context) ([]string, error)
+}
+
+type ReadOnlyDatabase interface {
+	Database
+
+	// IsReadOnly returns whether this database is read-only.
+	IsReadOnly() bool
 }
 
 // VersionedDatabase is a Database that can return tables as they existed at different points in time. The engine
@@ -486,6 +538,37 @@ type VersionedDatabase interface {
 	// GetTableNamesAsOf returns the table names of every table in the database as of the revision given. Implementors
 	// must choose which types of expressions to accept as revision names.
 	GetTableNamesAsOf(ctx *Context, asOf interface{}) ([]string, error)
+}
+
+// Transaction is an opaque type implemented by an integrator to record necessary information at the start of a
+// transaction. Active transactions will be recorded in the session.
+type Transaction interface {
+	fmt.Stringer
+}
+
+// TransactionDatabase is a Database that can BEGIN, ROLLBACK and COMMIT transactions, as well as create SAVEPOINTS and
+// restore to them.
+type TransactionDatabase interface {
+	Database
+
+	// StartTransaction starts a new transaction and returns it
+	StartTransaction(ctx *Context) (Transaction, error)
+
+	// CommitTransaction commits the transaction given
+	CommitTransaction(ctx *Context, tx Transaction) error
+
+	// Rollback restores the database to the state recorded in the transaction given
+	Rollback(ctx *Context, transaction Transaction) error
+
+	// CreateSavepoint records a savepoint for the transaction given with the name given. If the name is already in use
+	// for this transaction, the new savepoint replaces the old one.
+	CreateSavepoint(ctx *Context, transaction Transaction, name string) error
+
+	// RollbackToSavepoint restores the database to the state named by the savepoint
+	RollbackToSavepoint(ctx *Context, transaction Transaction, name string) error
+
+	// ReleaseSavepoint removes the savepoint named from the transaction given
+	ReleaseSavepoint(ctx *Context, transaction Transaction, name string) error
 }
 
 // TriggerDefinition defines a trigger. Integrators are not expected to parse or understand the trigger definitions,
@@ -511,6 +594,19 @@ type TriggerDatabase interface {
 	// DropTrigger is called when a trigger should no longer be stored. The name has already been validated.
 	// Returns ErrTriggerDoesNotExist if the trigger was not found.
 	DropTrigger(ctx *Context, name string) error
+}
+
+// TemporaryTableDatabase is a database that can query the session (which manages the temporary table state) to
+// retrieve the name of all temporary tables.
+type TemporaryTableDatabase interface {
+	GetAllTemporaryTables(ctx *Context) ([]Table, error)
+}
+
+// TableCopierDatabase is a database that can copy a source table's data (without preserving indexed, fks, etc.) into
+// another destination table.
+type TableCopierDatabase interface {
+	// CopyTableData copies the sourceTable data to the destinationTable and returns the number of rows copied.
+	CopyTableData(ctx *Context, sourceTable string, destinationTable string) (uint64, error)
 }
 
 // GetTableInsensitive implements a case insensitive map lookup for tables keyed off of the table name.
@@ -591,6 +687,15 @@ type TableCreator interface {
 	// Creates the table with the given name and schema. If a table with that name already exists, must return
 	// sql.ErrTableAlreadyExists.
 	CreateTable(ctx *Context, name string, schema Schema) error
+}
+
+// TemporaryTableCreator is a database that can create temporary tables that persist only as long as the session.
+// Note that temporary tables with the same name as persisted tables take precedence in most SQL operations.
+type TemporaryTableCreator interface {
+	Database
+	// Creates the table with the given name and schema. If a temporary table with that name already exists, must
+	// return sql.ErrTableAlreadyExists
+	CreateTemporaryTable(ctx *Context, name string, schema Schema) error
 }
 
 // ViewCreator should be implemented by databases that want to know when a view

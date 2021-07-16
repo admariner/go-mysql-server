@@ -15,7 +15,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"net"
 	"regexp"
@@ -28,7 +27,8 @@ import (
 	"github.com/dolthub/vitess/go/netutil"
 	"github.com/dolthub/vitess/go/sqltypes"
 	"github.com/dolthub/vitess/go/vt/proto/query"
-	"github.com/dolthub/vitess/go/vt/sqlparser"
+	"github.com/go-kit/kit/metrics/discard"
+	"github.com/opentracing/opentracing-go"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/src-d/go-errors.v1"
 
@@ -37,6 +37,7 @@ import (
 	"github.com/dolthub/go-mysql-server/internal/sockstate"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
+	"github.com/dolthub/go-mysql-server/sql/parse"
 	"github.com/dolthub/go-mysql-server/sql/plan"
 )
 
@@ -107,8 +108,8 @@ func (h *Handler) ConnectionClosed(c *mysql.Conn) {
 	ctx, _ := h.sm.NewContextWithQuery(c, "")
 	h.sm.CloseConn(c)
 
-	// If connection was closed, kill only its associated queries.
-	h.e.Catalog.ProcessList.KillOnlyQueries(c.ConnectionID)
+	// If connection was closed, kill its associated queries.
+	h.e.Catalog.ProcessList.Kill(c.ConnectionID)
 	if err := h.e.Catalog.UnlockTables(ctx, c.ConnectionID); err != nil {
 		logrus.Errorf("unable to unlock tables on session close: %s", err)
 	}
@@ -238,20 +239,7 @@ func (h *Handler) doQuery(
 	bindings map[string]*query.BindVariable,
 	callback func(*sqltypes.Result) error,
 ) error {
-	logrus.Tracef("received query %s", query)
-
-	ctx, err := h.sm.NewContextWithQuery(c, query)
-
-	if err != nil {
-		return err
-	}
-
-	if !h.e.Async(ctx, query) {
-		newCtx, cancel := context.WithCancel(ctx)
-		ctx = ctx.WithContext(newCtx)
-
-		defer cancel()
-	}
+	logrus.Tracef("connection %d: received query %s", c.ConnectionID, query)
 
 	handled, err := h.handleKill(c, query)
 	if err != nil {
@@ -262,47 +250,63 @@ func (h *Handler) doQuery(
 		return callback(&sqltypes.Result{})
 	}
 
+	ctx, err := h.sm.NewContextWithQuery(c, query)
+	if err != nil {
+		return err
+	}
+
+	finish := observeQuery(ctx, query)
+	defer finish(err)
+
+	// TODO: it would be nice to put this logic in the engine, not the handler, but we don't want the process to be
+	//  marked done until we're done spooling rows over the wire
+	ctx, err = h.e.Catalog.AddProcess(ctx, query)
+	defer func() {
+		if err != nil && ctx != nil {
+			h.e.Catalog.Done(ctx.Pid())
+		}
+	}()
+
 	start := time.Now()
 
-	// Parse the query independently of the engine for further analysis. The parser has its own parsing logic for
-	// statements not handled by vitess's parser, so even if there's a parse error here we still pass it to the engine
-	// for execution.
-	// TODO: unify parser logic so we don't have to parse twice
-	parsedQuery, parseErr := sqlparser.Parse(query)
-	switch n := parsedQuery.(type) {
-	case *sqlparser.Load:
+	parsed, _ := parse.Parse(ctx, query)
+	switch n := parsed.(type) {
+	case *plan.LoadData:
 		if n.Local {
-			// tell the connection to undergo the load data process with this
-			// metadata
+			// tell the connection to undergo the load data process with this metadata
 			tmpdir, err := ctx.GetSessionVariable(ctx, "tmpdir")
 			if err != nil {
 				return err
 			}
-			err = c.HandleLoadDataLocalQuery(tmpdir.(string), plan.TmpfileName, n.Infile)
+			err = c.HandleLoadDataLocalQuery(tmpdir.(string), plan.TmpfileName, n.File)
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	var schema sql.Schema
-	var rows sql.RowIter
-	if len(bindings) == 0 {
-		schema, rows, err = h.e.Query(ctx, query)
-	} else {
-		sqlBindings, err := bindingsToExprs(bindings)
+	logrus.WithField("query", query).Tracef("connection %d: executing query", c.ConnectionID)
+
+	var sqlBindings map[string]sql.Expression
+	if len(bindings) > 0 {
+		sqlBindings, err = bindingsToExprs(bindings)
 		if err != nil {
+			logrus.Tracef("Error processing bindings for query %s: %s", query, err)
 			return err
 		}
-		schema, rows, err = h.e.QueryWithBindings(ctx, query, sqlBindings)
 	}
+
+	// TODO: it would be nice to put this logic in the engine itself, not the handler, but we wouldn't get accurate
+	//  timing without some more work
 	defer func() {
 		if q, ok := h.e.Auth.(*auth.Audit); ok {
 			q.Query(ctx, time.Since(start), err)
 		}
 	}()
+
+	schema, rows, err := h.e.QueryNodeWithBindings(ctx, query, parsed, sqlBindings)
 	if err != nil {
-		logrus.Tracef("Error running query %s: %s", query, err)
+		logrus.Tracef("connection %d: error running query: %s", c.ConnectionID, err)
 		return err
 	}
 
@@ -316,7 +320,7 @@ func (h *Handler) doQuery(
 	// To close the goroutines
 	quit := make(chan struct{})
 
-	// Default waitTime is one minute if there is not timeout configured, in which case
+	// Default waitTime is one minute if there is no timeout configured, in which case
 	// it will loop to iterate again unless the socket died by the OS timeout or other problems.
 	// If there is a timeout, it will be enforced to ensure that Vitess has a chance to
 	// call Handler.CloseConnection()
@@ -345,7 +349,7 @@ func (h *Handler) doQuery(
 		}
 	}()
 
-	go h.pollForClosedConnection(c, errChan, quit, query)
+	go h.pollForClosedConnection(c, errChan, quit)
 
 rowLoop:
 	for {
@@ -370,17 +374,15 @@ rowLoop:
 				break rowLoop
 			}
 
-			logrus.Tracef("got error %s", err.Error())
+			logrus.Tracef("connection %d: got error %s", c.ConnectionID, err.Error())
 			close(quit)
 			return err
 		case row := <-rowChan:
-			if isOkResult(row) {
+			if sql.IsOkResult(row) {
 				if len(r.Rows) > 0 {
 					panic("Got OkResult mixed with RowResult")
 				}
 				r = resultFromOkResult(row[0].(sql.OkResult))
-
-				logrus.Tracef("returning OK result %v", r)
 				break rowLoop
 			}
 
@@ -390,13 +392,13 @@ rowLoop:
 				return err
 			}
 
-			logrus.Tracef("returning result row %s", outputRow)
+			logrus.Tracef("connection %d spooling result row %s", c.ConnectionID, outputRow)
 			r.Rows = append(r.Rows, outputRow)
 			r.RowsAffected++
 		case <-timer.C:
 			if h.readTimeout != 0 {
 				// Cancel and return so Vitess can call the CloseConnection callback
-				logrus.Tracef("got timeout")
+				logrus.Tracef("connection %d got timeout", c.ConnectionID)
 				close(quit)
 				return ErrRowTimeout.New()
 			}
@@ -410,18 +412,21 @@ rowLoop:
 		return err
 	}
 
-	autoCommit, err := isSessionAutocommit(ctx)
-	if err != nil {
+	if err = setConnStatusFlags(ctx, c); err != nil {
+		return err
+	}
+	if err = setResultInfo(ctx, c, r, parsed); err != nil {
 		return err
 	}
 
-	_, statementIsCommit := parsedQuery.(*sqlparser.Commit)
-	if statementIsCommit || (autoCommit && statementNeedsCommit(parsedQuery, parseErr)) {
-		if err := ctx.Session.CommitTransaction(ctx, getTransactionDbName(ctx)); err != nil {
-			return err
-		}
+	switch len(r.Rows) {
+	case 0:
+		logrus.Tracef("connection %d returning empty result", c.ConnectionID)
+	case 1:
+		logrus.Tracef("connection %d returning result %v", c.ConnectionID, r)
 	}
 
+	// TODO(andy): logic doesn't match comment?
 	// Even if r.RowsAffected = 0, the callback must be
 	// called to update the state in the go-vitess' listener
 	// and avoid returning errors when the query doesn't
@@ -431,6 +436,64 @@ rowLoop:
 	}
 
 	return callback(r)
+}
+
+// See https://dev.mysql.com/doc/internals/en/status-flags.html
+func setConnStatusFlags(ctx *sql.Context, c *mysql.Conn) error {
+	ok, err := isSessionAutocommit(ctx)
+	if err != nil {
+		return err
+	}
+	if ok {
+		c.StatusFlags |= uint16(mysql.ServerStatusAutocommit)
+	} else {
+		c.StatusFlags &= ^uint16(mysql.ServerStatusAutocommit)
+	}
+
+	if t := ctx.GetTransaction(); t != nil {
+		c.StatusFlags |= uint16(mysql.ServerInTransaction)
+	} else {
+		c.StatusFlags &= ^uint16(mysql.ServerInTransaction)
+	}
+
+	return nil
+}
+
+func setResultInfo(ctx *sql.Context, conn *mysql.Conn, r *sqltypes.Result, parsedQuery sql.Node) error {
+	lastId := ctx.Session.GetLastQueryInfo(sql.LastInsertId)
+	r.InsertID = uint64(lastId)
+
+	// cc. https://dev.mysql.com/doc/internals/en/capability-flags.html
+	// Check if the CLIENT_FOUND_ROWS Compatibility Flag is set
+	if shouldUseFoundRowsOutput(conn, parsedQuery) {
+		r.RowsAffected = uint64(ctx.GetLastQueryInfo(sql.FoundRows))
+	}
+
+	return nil
+}
+
+// When CLIENT_FOUND_ROWS is set we should return the number of rows MATCHED as the number of affected.
+// This should only happen on UPDATE and INSERT ON DUPLICATE queries
+func shouldUseFoundRowsOutput(conn *mysql.Conn, parsedQuery sql.Node) bool {
+	if (conn.Capabilities & mysql.CapabilityClientFoundRows) < 0 {
+		return false
+	}
+
+	// TODO: Add support for INSERT ON DUPLICATE
+	switch parsedQuery.(type) {
+	case *plan.Update:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSessionAutocommit(ctx *sql.Context) (bool, error) {
+	autoCommitSessionVar, err := ctx.GetSessionVariable(ctx, sql.AutoCommitSessionVar)
+	if err != nil {
+		return false, err
+	}
+	return sql.ConvertToBool(autoCommitSessionVar)
 }
 
 // Call doQuery and cast known errors to SQLError
@@ -452,7 +515,7 @@ func (h *Handler) errorWrappedDoQuery(
 // Periodically polls the connection socket to determine if it is has been closed by the client, sending an error on
 // the supplied error channel if it has. Meant to be run in a separate goroutine from the query handler routine.
 // Returns immediately on platforms that can't support TCP socket checks.
-func (h *Handler) pollForClosedConnection(c *mysql.Conn, errChan chan error, quit chan struct{}, query string) {
+func (h *Handler) pollForClosedConnection(c *mysql.Conn, errChan chan error, quit chan struct{}) {
 	tcpConn, ok := maybeGetTCPConn(c.Conn)
 	if !ok {
 		logrus.Debug("Connection checker exiting, connection isn't TCP")
@@ -511,25 +574,6 @@ func maybeGetTCPConn(conn net.Conn) (*net.TCPConn, bool) {
 	return nil, false
 }
 
-func isSessionAutocommit(ctx *sql.Context) (bool, error) {
-	autoCommitSessionVar, err := ctx.GetSessionVariable(ctx, sql.AutoCommitSessionVar)
-	if err != nil {
-		return false, err
-	}
-	return sql.ConvertToBool(autoCommitSessionVar)
-}
-
-func statementNeedsCommit(parsedQuery sqlparser.Statement, parseErr error) bool {
-	if parseErr == nil {
-		switch parsedQuery.(type) {
-		case *sqlparser.DDL, *sqlparser.Commit, *sqlparser.Update, *sqlparser.Insert, *sqlparser.Delete, *sqlparser.Load:
-			return true
-		}
-	}
-
-	return false
-}
-
 func resultFromOkResult(result sql.OkResult) *sqltypes.Result {
 	infoStr := ""
 	if result.Info != nil {
@@ -539,27 +583,6 @@ func resultFromOkResult(result sql.OkResult) *sqltypes.Result {
 		RowsAffected: result.RowsAffected,
 		InsertID:     result.InsertID,
 		Info:         infoStr,
-	}
-}
-
-func isOkResult(row sql.Row) bool {
-	if len(row) == 1 {
-		_, ok := row[0].(sql.OkResult)
-		return ok
-	}
-	return false
-}
-
-func getTransactionDbName(ctx *sql.Context) string {
-	currentDbInUse := ctx.GetCurrentDatabase()
-	queriedDatabase := ctx.GetQueriedDatabase()
-
-	ctx.SetQueriedDatabase("") // reset the queried database variable
-
-	if queriedDatabase != "" {
-		return queriedDatabase
-	} else {
-		return currentDbInUse
 	}
 }
 
@@ -647,4 +670,31 @@ func schemaToFields(s sql.Schema) []*query.Field {
 	}
 
 	return fields
+}
+
+var (
+	// QueryCounter describes a metric that accumulates number of queries monotonically.
+	QueryCounter = discard.NewCounter()
+
+	// QueryErrorCounter describes a metric that accumulates number of failed queries monotonically.
+	QueryErrorCounter = discard.NewCounter()
+
+	// QueryHistogram describes a queries latency.
+	QueryHistogram = discard.NewHistogram()
+)
+
+func observeQuery(ctx *sql.Context, query string) func(err error) {
+	span, _ := ctx.Span("query", opentracing.Tag{Key: "query", Value: query})
+
+	t := time.Now()
+	return func(err error) {
+		if err != nil {
+			QueryErrorCounter.With("query", query, "error", err.Error()).Add(1)
+		} else {
+			QueryCounter.With("query", query).Add(1)
+			QueryHistogram.With("query", query, "duration", "seconds").Observe(time.Since(t).Seconds())
+		}
+
+		span.Finish()
+	}
 }

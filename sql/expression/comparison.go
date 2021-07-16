@@ -91,6 +91,7 @@ func (c *comparison) castLeftAndRight(left, right interface{}) (interface{}, int
 	if sql.IsTuple(leftType) && sql.IsTuple(rightType) {
 		return left, right, c.Left().Type(), nil
 	}
+
 	if sql.IsNumber(leftType) || sql.IsNumber(rightType) {
 		if sql.IsDecimal(leftType) || sql.IsDecimal(rightType) {
 			//TODO: We need to set to the actual DECIMAL type
@@ -130,6 +131,15 @@ func (c *comparison) castLeftAndRight(left, right interface{}) (interface{}, int
 		}
 
 		return l, r, sql.Uint64, nil
+	}
+
+	if sql.IsTime(leftType) || sql.IsTime(rightType) {
+		l, r, err := convertLeftAndRight(left, right, ConvertToDatetime)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		return l, r, sql.Datetime, nil
 	}
 
 	left, right, err := convertLeftAndRight(left, right, ConvertToChar)
@@ -190,7 +200,7 @@ func (e *Equals) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 }
 
 // WithChildren implements the Expression interface.
-func (e *Equals) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (e *Equals) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(e, len(children), 2)
 	}
@@ -198,11 +208,11 @@ func (e *Equals) WithChildren(children ...sql.Expression) (sql.Expression, error
 }
 
 func (e *Equals) String() string {
-	return fmt.Sprintf("%s = %s", e.Left(), e.Right())
+	return fmt.Sprintf("(%s = %s)", e.Left(), e.Right())
 }
 
 func (e *Equals) DebugString() string {
-	return fmt.Sprintf("%s = %s", sql.DebugString(e.Left()), sql.DebugString(e.Right()))
+	return fmt.Sprintf("(%s = %s)", sql.DebugString(e.Left()), sql.DebugString(e.Right()))
 }
 
 // NullSafeEquals is a comparison that checks an expression is equal to
@@ -263,7 +273,7 @@ func (e *NullSafeEquals) Eval(ctx *sql.Context, row sql.Row) (interface{}, error
 }
 
 // WithChildren implements the Expression interface.
-func (e *NullSafeEquals) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (e *NullSafeEquals) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(e, len(children), 2)
 	}
@@ -271,11 +281,11 @@ func (e *NullSafeEquals) WithChildren(children ...sql.Expression) (sql.Expressio
 }
 
 func (e *NullSafeEquals) String() string {
-	return fmt.Sprintf("%s <=> %s", e.Left(), e.Right())
+	return fmt.Sprintf("(%s <=> %s)", e.Left(), e.Right())
 }
 
 func (e *NullSafeEquals) DebugString() string {
-	return fmt.Sprintf("%s <=> %s", sql.DebugString(e.Left()), sql.DebugString(e.Right()))
+	return fmt.Sprintf("(%s <=> %s)", sql.DebugString(e.Left()), sql.DebugString(e.Right()))
 }
 
 // Regexp is a comparison that checks an expression matches a regexp.
@@ -323,7 +333,7 @@ func (re *Regexp) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 }
 
 type matcherErrTuple struct {
-	matcher regex.Matcher
+	matcher regex.DisposableMatcher
 	err     error
 }
 
@@ -337,17 +347,14 @@ func (re *Regexp) compareRegexp(ctx *sql.Context, row sql.Row) (interface{}, err
 		return nil, err
 	}
 
-	var (
-		matcher  regex.Matcher
-		disposer regex.Disposer
-	)
+	var matcher regex.DisposableMatcher
 
 	if !re.cached {
 		right, rerr := re.evalRight(ctx, row)
 		if rerr != nil || right == nil {
 			return right, rerr
 		}
-		matcher, disposer, err = regex.New(regex.Default(), *right)
+		matcher, err = regex.NewDisposableMatcher(regex.Default(), *right)
 	} else {
 		re.once.Do(func() {
 			right, err := re.evalRight(ctx, row)
@@ -356,8 +363,8 @@ func (re *Regexp) compareRegexp(ctx *sql.Context, row sql.Row) (interface{}, err
 					if err != nil || right == nil {
 						return matcherErrTuple{nil, err}
 					}
-					r, _, e := regex.New(regex.Default(), *right)
-					return matcherErrTuple{r, e}
+					m, e := regex.NewDisposableMatcher(regex.Default(), *right)
+					return matcherErrTuple{m, e}
 				},
 			}
 		})
@@ -374,7 +381,7 @@ func (re *Regexp) compareRegexp(ctx *sql.Context, row sql.Row) (interface{}, err
 	ok := matcher.Match(left.(string))
 
 	if !re.cached {
-		disposer.Dispose()
+		matcher.Dispose()
 	} else {
 		re.pool.Put(matcherErrTuple{matcher, nil})
 	}
@@ -398,7 +405,7 @@ func (re *Regexp) evalRight(ctx *sql.Context, row sql.Row) (*string, error) {
 }
 
 // WithChildren implements the Expression interface.
-func (re *Regexp) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (re *Regexp) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(re, len(children), 2)
 	}
@@ -406,11 +413,11 @@ func (re *Regexp) WithChildren(children ...sql.Expression) (sql.Expression, erro
 }
 
 func (re *Regexp) String() string {
-	return fmt.Sprintf("%s REGEXP %s", re.Left(), re.Right())
+	return fmt.Sprintf("(%s REGEXP %s)", re.Left(), re.Right())
 }
 
 func (re *Regexp) DebugString() string {
-	return fmt.Sprintf("%s REGEXP %s", sql.DebugString(re.Left()), sql.DebugString(re.Right()))
+	return fmt.Sprintf("(%s REGEXP %s)", sql.DebugString(re.Left()), sql.DebugString(re.Right()))
 }
 
 // GreaterThan is a comparison that checks an expression is greater than another.
@@ -438,7 +445,7 @@ func (gt *GreaterThan) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) 
 }
 
 // WithChildren implements the Expression interface.
-func (gt *GreaterThan) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (gt *GreaterThan) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(gt, len(children), 2)
 	}
@@ -446,11 +453,11 @@ func (gt *GreaterThan) WithChildren(children ...sql.Expression) (sql.Expression,
 }
 
 func (gt *GreaterThan) String() string {
-	return fmt.Sprintf("%s > %s", gt.Left(), gt.Right())
+	return fmt.Sprintf("(%s > %s)", gt.Left(), gt.Right())
 }
 
 func (gt *GreaterThan) DebugString() string {
-	return fmt.Sprintf("%s > %s", sql.DebugString(gt.Left()), sql.DebugString(gt.Right()))
+	return fmt.Sprintf("(%s > %s)", sql.DebugString(gt.Left()), sql.DebugString(gt.Right()))
 }
 
 // LessThan is a comparison that checks an expression is less than another.
@@ -478,7 +485,7 @@ func (lt *LessThan) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 }
 
 // WithChildren implements the Expression interface.
-func (lt *LessThan) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (lt *LessThan) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(lt, len(children), 2)
 	}
@@ -486,11 +493,11 @@ func (lt *LessThan) WithChildren(children ...sql.Expression) (sql.Expression, er
 }
 
 func (lt *LessThan) String() string {
-	return fmt.Sprintf("%s < %s", lt.Left(), lt.Right())
+	return fmt.Sprintf("(%s < %s)", lt.Left(), lt.Right())
 }
 
 func (lt *LessThan) DebugString() string {
-	return fmt.Sprintf("%s < %s", sql.DebugString(lt.Left()), sql.DebugString(lt.Right()))
+	return fmt.Sprintf("(%s < %s)", sql.DebugString(lt.Left()), sql.DebugString(lt.Right()))
 }
 
 // GreaterThanOrEqual is a comparison that checks an expression is greater or equal to
@@ -519,7 +526,7 @@ func (gte *GreaterThanOrEqual) Eval(ctx *sql.Context, row sql.Row) (interface{},
 }
 
 // WithChildren implements the Expression interface.
-func (gte *GreaterThanOrEqual) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (gte *GreaterThanOrEqual) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(gte, len(children), 2)
 	}
@@ -527,11 +534,11 @@ func (gte *GreaterThanOrEqual) WithChildren(children ...sql.Expression) (sql.Exp
 }
 
 func (gte *GreaterThanOrEqual) String() string {
-	return fmt.Sprintf("%s >= %s", gte.Left(), gte.Right())
+	return fmt.Sprintf("(%s >= %s)", gte.Left(), gte.Right())
 }
 
 func (gte *GreaterThanOrEqual) DebugString() string {
-	return fmt.Sprintf("%s >= %s", sql.DebugString(gte.Left()), sql.DebugString(gte.Right()))
+	return fmt.Sprintf("(%s >= %s)", sql.DebugString(gte.Left()), sql.DebugString(gte.Right()))
 }
 
 // LessThanOrEqual is a comparison that checks an expression is equal or lower than
@@ -560,7 +567,7 @@ func (lte *LessThanOrEqual) Eval(ctx *sql.Context, row sql.Row) (interface{}, er
 }
 
 // WithChildren implements the Expression interface.
-func (lte *LessThanOrEqual) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (lte *LessThanOrEqual) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(lte, len(children), 2)
 	}
@@ -568,11 +575,11 @@ func (lte *LessThanOrEqual) WithChildren(children ...sql.Expression) (sql.Expres
 }
 
 func (lte *LessThanOrEqual) String() string {
-	return fmt.Sprintf("%s <= %s", lte.Left(), lte.Right())
+	return fmt.Sprintf("(%s <= %s)", lte.Left(), lte.Right())
 }
 
 func (lte *LessThanOrEqual) DebugString() string {
-	return fmt.Sprintf("%s <= %s", sql.DebugString(lte.Left()), sql.DebugString(lte.Right()))
+	return fmt.Sprintf("(%s <= %s)", sql.DebugString(lte.Left()), sql.DebugString(lte.Right()))
 }
 
 var (

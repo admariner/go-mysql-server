@@ -66,7 +66,7 @@ func getQueryType(child sql.Node) queryType {
 	// TODO: behavior of CALL is not specified in the docs. Needs investigation
 	var queryType queryType = queryTypeSelect
 	Inspect(child, func(node sql.Node) bool {
-		if IsDdlNode(node) {
+		if IsNoRowNode(node) {
 			queryType = queryTypeDdl
 			return false
 		}
@@ -101,8 +101,20 @@ func (p *QueryProcess) DebugString() string {
 // shouldSetFoundRows returns whether the query process should set the FOUND_ROWS query variable. It should do this for
 // any select except a Limit with a SQL_CALC_FOUND_ROWS modifier, which is handled in the Limit node itself.
 func (p *QueryProcess) shouldSetFoundRows() bool {
-	limit, ok := p.Child.(*Limit)
-	if !ok {
+	var limit *Limit
+	Inspect(p.Child, func(n sql.Node) bool {
+		switch n := n.(type) {
+		case *StartTransaction:
+			return true
+		case *Limit:
+			limit = n
+			return false
+		default:
+			return false
+		}
+	})
+
+	if limit == nil {
 		return true
 	}
 
@@ -397,20 +409,33 @@ func partitionName(p sql.Partition) string {
 	return string(p.Key())
 }
 
-// IsDdlNode returns whether the node given is a DDL operation, which includes things like SHOW commands. In general,
-// these are nodes that interact only with schema and the catalog, not with any table rows.
-func IsDdlNode(node sql.Node) bool {
+// IsNoRowNode returns whether this are node interacts only with schema and the catalog, not with any table
+// rows.
+func IsNoRowNode(node sql.Node) bool {
+	return IsDDLNode(node) || IsShowNode(node)
+}
+
+func IsDDLNode(node sql.Node) bool {
 	switch node.(type) {
 	case *CreateTable, *DropTable, *Truncate,
 		*AddColumn, *ModifyColumn, *DropColumn,
 		*CreateDB, *DropDB,
 		*RenameTable, *RenameColumn,
+		*CreateView, *DropView,
 		*CreateIndex, *AlterIndex, *DropIndex,
 		*CreateProcedure, *DropProcedure,
 		*CreateForeignKey, *DropForeignKey,
 		*CreateCheck, *DropCheck,
-		*CreateTrigger, *DropTrigger,
-		*ShowTables, *ShowCreateTable,
+		*CreateTrigger, *DropTrigger:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsShowNode(node sql.Node) bool {
+	switch node.(type) {
+	case *ShowTables, *ShowCreateTable,
 		*ShowTriggers, *ShowCreateTrigger,
 		*ShowDatabases, *ShowCreateDatabase,
 		*ShowColumns, *ShowIndexes,

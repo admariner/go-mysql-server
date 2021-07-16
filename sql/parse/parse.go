@@ -64,8 +64,6 @@ var (
 	showVariablesRegex   = regexp.MustCompile(`^show\s+(.*)?variables\s*`)
 	showWarningsRegex    = regexp.MustCompile(`^show\s+warnings\s*`)
 	fullProcessListRegex = regexp.MustCompile(`^show\s+(full\s+)?processlist$`)
-	unlockTablesRegex    = regexp.MustCompile(`^unlock\s+tables$`)
-	lockTablesRegex      = regexp.MustCompile(`^lock\s+tables\s`)
 	setRegex             = regexp.MustCompile(`^set\s+`)
 )
 
@@ -127,10 +125,6 @@ func Parse(ctx *sql.Context, query string) (sql.Node, error) {
 		return parseShowWarnings(ctx, s)
 	case fullProcessListRegex.MatchString(lowerQuery):
 		return plan.NewShowProcessList(), nil
-	case unlockTablesRegex.MatchString(lowerQuery):
-		return plan.NewUnlockTables(), nil
-	case lockTablesRegex.MatchString(lowerQuery):
-		return parseLockTables(ctx, s)
 	case setRegex.MatchString(lowerQuery):
 		s = fixSetQuery(s)
 	}
@@ -154,10 +148,6 @@ func convert(ctx *sql.Context, stmt sqlparser.Statement, query string) (sql.Node
 	switch n := stmt.(type) {
 	default:
 		return nil, ErrUnsupportedSyntax.New(sqlparser.String(n))
-	case *sqlparser.BeginEndBlock:
-		return convertBeginEndBlock(ctx, n, query)
-	case *sqlparser.IfStatement:
-		return convertIfBlock(ctx, n)
 	case *sqlparser.Show:
 		// When a query is empty it means it comes from a subquery, as we don't
 		// have the query itself in a subquery. Hence, a SHOW could not be
@@ -166,12 +156,9 @@ func convert(ctx *sql.Context, stmt sqlparser.Statement, query string) (sql.Node
 			return nil, ErrUnsupportedFeature.New("SHOW in subquery")
 		}
 		return convertShow(ctx, n, query)
-	case *sqlparser.Explain:
-		return convertExplain(ctx, n)
-	case *sqlparser.Insert:
-		return convertInsert(ctx, n)
 	case *sqlparser.DDL:
 		// unlike other statements, DDL statements have loose parsing by default
+		// TODO: fix this
 		ddl, err := sqlparser.ParseStrictDDL(query)
 		if err != nil {
 			return nil, err
@@ -185,32 +172,46 @@ func convert(ctx *sql.Context, stmt sqlparser.Statement, query string) (sql.Node
 		return convertMultiAlterDDL(ctx, query, multiAlterDdl.(*sqlparser.MultiAlterDDL))
 	case *sqlparser.DBDDL:
 		return convertDBDDL(n)
-	case *sqlparser.Set:
-		return convertSet(ctx, n)
-	case *sqlparser.Use:
-		return convertUse(n)
-	case *sqlparser.Begin:
-		return plan.NewBegin(), nil
-	case *sqlparser.Commit:
-		return plan.NewCommit(), nil
-	case *sqlparser.Rollback:
-		return plan.NewRollback(), nil
+	case *sqlparser.Explain:
+		return convertExplain(ctx, n)
+	case *sqlparser.Insert:
+		return convertInsert(ctx, n)
 	case *sqlparser.Delete:
 		return convertDelete(ctx, n)
 	case *sqlparser.Update:
 		return convertUpdate(ctx, n)
 	case *sqlparser.Load:
 		return convertLoad(ctx, n)
+	case *sqlparser.Set:
+		return convertSet(ctx, n)
+	case *sqlparser.Use:
+		return convertUse(n)
+	case *sqlparser.Begin:
+		return plan.NewStartTransaction(""), nil
+	case *sqlparser.Commit:
+		return plan.NewCommit(""), nil
+	case *sqlparser.Rollback:
+		return plan.NewRollback(""), nil
+	case *sqlparser.Savepoint:
+		return plan.NewCreateSavepoint("", n.Identifier), nil
+	case *sqlparser.RollbackSavepoint:
+		return plan.NewRollbackSavepoint("", n.Identifier), nil
+	case *sqlparser.ReleaseSavepoint:
+		return plan.NewReleaseSavepoint("", n.Identifier), nil
+	case *sqlparser.BeginEndBlock:
+		return convertBeginEndBlock(ctx, n, query)
+	case *sqlparser.IfStatement:
+		return convertIfBlock(ctx, n)
 	case *sqlparser.Call:
 		return convertCall(ctx, n)
 	case *sqlparser.Declare:
 		return convertDeclare(ctx, n)
 	case *sqlparser.Signal:
 		return convertSignal(ctx, n)
-		//TODO: implement the SAVEPOINT statements used in transactions, currently here for integration compatibility
-	case *sqlparser.Savepoint, *sqlparser.RollbackSavepoint, *sqlparser.ReleaseSavepoint:
-		ctx.Warn(1642, "SAVEPOINT functionality is currently a no-op")
-		return plan.NewBlock(nil), nil // An empty block is essentially a no-op
+	case *sqlparser.LockTables:
+		return convertLockTables(ctx, n)
+	case *sqlparser.UnlockTables:
+		return convertUnlockTables(ctx, n)
 	}
 }
 
@@ -624,7 +625,7 @@ func convertSelect(ctx *sql.Context, s *sqlparser.Select) (sql.Node, error) {
 		}
 	} else if ok, val := sql.HasDefaultValue(ctx, ctx.Session, "sql_select_limit"); !ok {
 		limit := mustCastNumToInt64(val)
-		node = plan.NewLimit(limit, node)
+		node = plan.NewLimit(expression.NewLiteral(limit, sql.Int64), node)
 	}
 
 	// Finally, if common table expressions were provided, wrap the top-level node in a With node to capture them
@@ -925,6 +926,28 @@ func convertSignal(ctx *sql.Context, s *sqlparser.Signal) (sql.Node, error) {
 	}
 }
 
+func convertLockTables(ctx *sql.Context, s *sqlparser.LockTables) (sql.Node, error) {
+	tables := make([]*plan.TableLock, len(s.Tables))
+
+	for i, tbl := range s.Tables {
+		tableNode, err := tableExprToTable(ctx, tbl.Table)
+		if err != nil {
+			return nil, err
+		}
+
+		write := tbl.Lock == sqlparser.LockWrite || tbl.Lock == sqlparser.LockLowPriorityWrite
+
+		// TODO: Allow for other types of locks (LOW PRIORITY WRITE & LOCAL READ)
+		tables[i] = &plan.TableLock{Table: tableNode, Write: write}
+	}
+
+	return plan.NewLockTables(tables), nil
+}
+
+func convertUnlockTables(ctx *sql.Context, s *sqlparser.UnlockTables) (sql.Node, error) {
+	return plan.NewUnlockTables(), nil
+}
+
 func convertSignalConditionItemName(name sqlparser.SignalConditionItemName) (plan.SignalConditionItemName, error) {
 	// We convert to our own plan equivalents to keep a separation between the parser and implementation
 	switch name {
@@ -1199,8 +1222,22 @@ func convertCreateTable(ctx *sql.Context, c *sqlparser.DDL) (sql.Node, error) {
 			sql.UnresolvedDatabase(""),
 			c.Table.Name.String(),
 			plan.NewUnresolvedTable(c.OptLike.LikeTable.Name.String(), c.OptLike.LikeTable.Qualifier.String()),
-			c.IfNotExists,
+			plan.IfNotExistsOption(c.IfNotExists),
+			plan.TempTableOption(c.Temporary),
 		), nil
+	}
+
+	// In the case that no table spec is given but a SELECT Statement return the CREATE TABLE noder.
+	// if the table spec != nil it will get parsed below.
+	if c.TableSpec == nil && c.OptSelect != nil {
+		tableSpec := &plan.TableSpec{}
+
+		selectNode, err := convertSelectStatement(ctx, c.OptSelect.Select)
+		if err != nil {
+			return nil, err
+		}
+
+		return plan.NewCreateTableSelect(sql.UnresolvedDatabase(c.Table.Qualifier.String()), c.Table.Name.String(), selectNode, tableSpec, plan.IfNotExistsOption(c.IfNotExists), plan.TempTableOption(c.Temporary)), nil
 	}
 
 	schema, err := TableSpecToSchema(nil, c.TableSpec)
@@ -1297,8 +1334,17 @@ func convertCreateTable(ctx *sql.Context, c *sqlparser.DDL) (sql.Node, error) {
 		ChDefs:  chDefs,
 	}
 
+	if c.OptSelect != nil {
+		selectNode, err := convertSelectStatement(ctx, c.OptSelect.Select)
+		if err != nil {
+			return nil, err
+		}
+
+		return plan.NewCreateTableSelect(sql.UnresolvedDatabase(qualifier), c.Table.Name.String(), selectNode, tableSpec, plan.IfNotExistsOption(c.IfNotExists), plan.TempTableOption(c.Temporary)), nil
+	}
+
 	return plan.NewCreateTable(
-		sql.UnresolvedDatabase(qualifier), c.Table.Name.String(), c.IfNotExists, tableSpec), nil
+		sql.UnresolvedDatabase(qualifier), c.Table.Name.String(), plan.IfNotExistsOption(c.IfNotExists), plan.TempTableOption(c.Temporary), tableSpec), nil
 }
 
 type namedConstraint struct {
@@ -1866,13 +1912,9 @@ func limitToLimit(
 	limit sqlparser.Expr,
 	child sql.Node,
 ) (*plan.Limit, error) {
-	rowCount, err := getInt64Value(ctx, limit, "LIMIT with non-integer literal")
+	rowCount, err := ExprToExpression(ctx, limit)
 	if err != nil {
 		return nil, err
-	}
-
-	if rowCount < 0 {
-		return nil, ErrUnsupportedSyntax.New("LIMIT must be >= 0")
 	}
 
 	return plan.NewLimit(rowCount, child), nil
@@ -1892,16 +1934,12 @@ func offsetToOffset(
 	offset sqlparser.Expr,
 	child sql.Node,
 ) (*plan.Offset, error) {
-	o, err := getInt64Value(ctx, offset, "OFFSET with non-integer literal")
+	rowCount, err := ExprToExpression(ctx, offset)
 	if err != nil {
 		return nil, err
 	}
 
-	if o < 0 {
-		return nil, ErrUnsupportedSyntax.New("OFFSET must be >= 0")
-	}
-
-	return plan.NewOffset(o, child), nil
+	return plan.NewOffset(rowCount, child), nil
 }
 
 // getInt64Literal returns an int64 *expression.Literal for the value given, or an unsupported error with the string
@@ -1912,6 +1950,12 @@ func getInt64Literal(ctx *sql.Context, expr sqlparser.Expr, errStr string) (*exp
 		return nil, err
 	}
 
+	switch e := e.(type) {
+	case *expression.Literal:
+		if !sql.IsInteger(e.Type()) {
+			return nil, ErrUnsupportedFeature.New(errStr)
+		}
+	}
 	nl, ok := e.(*expression.Literal)
 	if !ok || !sql.IsInteger(nl.Type()) {
 		return nil, ErrUnsupportedFeature.New(errStr)
@@ -2139,13 +2183,13 @@ func ExprToExpression(ctx *sql.Context, e sqlparser.Expr) (sql.Expression, error
 		}
 
 		if v.To == nil {
-			return function.NewSubstring(name, from)
+			return function.NewSubstring(ctx, name, from)
 		}
 		to, err := ExprToExpression(ctx, v.To)
 		if err != nil {
 			return nil, err
 		}
-		return function.NewSubstring(name, from, to)
+		return function.NewSubstring(ctx, name, from, to)
 	case *sqlparser.ComparisonExpr:
 		return comparisonExprToExpression(ctx, v)
 	case *sqlparser.IsExpr:
@@ -2177,16 +2221,23 @@ func ExprToExpression(ctx *sql.Context, e sqlparser.Expr) (sql.Expression, error
 			return nil, err
 		}
 
-		if v.Distinct {
-			if v.Name.Lowered() != "count" {
-				return nil, ErrUnsupportedSyntax.New("DISTINCT on non-COUNT aggregations")
-			}
-
+		// NOTE: The count distinct expressions work differently due to the * syntax. eg. COUNT(*)
+		if v.Distinct && v.Name.Lowered() == "count" {
 			if len(exprs) != 1 {
 				return nil, ErrUnsupportedSyntax.New("more than one expression in COUNT")
 			}
 
 			return aggregation.NewCountDistinct(exprs[0]), nil
+		}
+
+		// NOTE: Not all aggregate functions support DISTINCT. Fortunately, the vitess parser will throw
+		// errors for when DISTINCT is used on aggregate functions that don't support DISTINCT.
+		if v.Distinct {
+			if len(exprs) != 1 {
+				return nil, ErrUnsupportedSyntax.New("more than one expression with distinct")
+			}
+
+			exprs[0] = expression.NewDistinctExpression(exprs[0])
 		}
 
 		return expression.NewUnresolvedFunction(v.Name.Lowered(),
@@ -2214,7 +2265,7 @@ func ExprToExpression(ctx *sql.Context, e sqlparser.Expr) (sql.Expression, error
 		}
 		groupConcatMaxLen := gcml.(uint64)
 
-		return aggregation.NewGroupConcat(v.Distinct, sortFields, separatorS, exprs, int(groupConcatMaxLen))
+		return aggregation.NewGroupConcat(ctx, v.Distinct, sortFields, separatorS, exprs, int(groupConcatMaxLen))
 	case *sqlparser.ParenExpr:
 		return ExprToExpression(ctx, v.Expr)
 	case *sqlparser.AndExpr:
@@ -2407,7 +2458,16 @@ func convertVal(v *sqlparser.SQLVal) (sql.Expression, error) {
 	case sqlparser.ValArg:
 		return expression.NewBindVar(strings.TrimPrefix(string(v.Val), ":")), nil
 	case sqlparser.BitVal:
-		return expression.NewLiteral(v.Val[0] == '1', sql.Boolean), nil
+		if len(v.Val) == 0 {
+			return expression.NewLiteral(0, sql.Uint64), nil
+		}
+
+		res, err := strconv.ParseUint(string(v.Val), 2, 64)
+		if err != nil {
+			return nil, err
+		}
+
+		return expression.NewLiteral(res, sql.Uint64), nil
 	}
 
 	return nil, ErrInvalidSQLValType.New(v.Type)
@@ -2566,7 +2626,6 @@ func unaryExprToExpression(ctx *sql.Context, e *sqlparser.UnaryExpr) (sql.Expres
 		if err != nil {
 			return nil, err
 		}
-
 		return expression.NewUnaryMinus(expr), nil
 	case sqlparser.PlusStr:
 		// Unary plus expressions do nothing (do not turn the expression positive). Just return the underlying expression.
@@ -2576,8 +2635,18 @@ func unaryExprToExpression(ctx *sql.Context, e *sqlparser.UnaryExpr) (sql.Expres
 		if err != nil {
 			return nil, err
 		}
-
 		return expression.NewBinary(expr), nil
+	case "_binary ":
+		// Charset introducers do not operate as CONVERT, they just state how a string should be interpreted.
+		// TODO: if we encounter a non-string, do something other than just return
+		expr, err := ExprToExpression(ctx, e.Expr)
+		if err != nil {
+			return nil, err
+		}
+		if exprLiteral, ok := expr.(*expression.Literal); ok && sql.IsTextOnly(exprLiteral.Type()) {
+			return expression.NewLiteral(exprLiteral.Value(), sql.LongBlob), nil
+		}
+		return expr, nil
 	default:
 		return nil, ErrUnsupportedFeature.New("unary operator: " + e.Operator)
 	}

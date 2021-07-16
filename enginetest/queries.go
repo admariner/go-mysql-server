@@ -401,6 +401,40 @@ var QueryTests = []QueryTest{
 		},
 	},
 	{
+		Query:    "select * from mytable t1 join mytable t2 on t2.i = t1.i where t2.i > 10",
+		Expected: []sql.Row{},
+	},
+	{
+		Query:    "select * from mytable t1 join mytable T2 on t2.i = t1.i where T2.i > 10",
+		Expected: []sql.Row{},
+	},
+	{
+		Query:    "select * from tabletest t1 join tabletest t2 on t2.s = t1.s where t2.i > 10",
+		Expected: []sql.Row{},
+	},
+	{
+		Query: `select mt.i, 
+			((
+				select count(*) from mytable
+            	where i in (
+               		select mt2.i from mytable mt2 where mt2.i > mt.i
+            	)
+			)) as greater_count
+			from mytable mt order by 1`,
+		Expected: []sql.Row{{1, 2}, {2, 1}, {3, 0}},
+	},
+	{
+		Query: `select mt.i, 
+			((
+				select count(*) from mytable
+            	where i in (
+               		select mt2.i from mytable mt2 where mt2.i = mt.i
+            	)
+			)) as eq_count
+			from mytable mt order by 1`,
+		Expected: []sql.Row{{1, 1}, {2, 1}, {3, 1}},
+	},
+	{
 		Query: "WITH mt as (select i,s FROM mytable) SELECT s,i FROM mt;",
 		Expected: []sql.Row{
 			{"first row", int64(1)},
@@ -1188,8 +1222,27 @@ var QueryTests = []QueryTest{
 		Expected: []sql.Row{{int64(1)}},
 	},
 	{
+		Query:    "SELECT i FROM mytable WHERE s = 'first row' ORDER BY i DESC LIMIT 0;",
+		Expected: []sql.Row{},
+	},
+	{
 		Query:    "SELECT i FROM mytable ORDER BY i LIMIT 1 OFFSET 1;",
 		Expected: []sql.Row{{int64(2)}},
+	},
+	{
+		Query: "SELECT i FROM mytable WHERE s = 'first row' ORDER BY i DESC LIMIT ?;",
+		Bindings: map[string]sql.Expression{
+			"v1": expression.NewLiteral(1, sql.Int8),
+		},
+		Expected: []sql.Row{{int64(1)}},
+	},
+	{
+		Query: "SELECT i FROM mytable ORDER BY i LIMIT ? OFFSET 2;",
+		Bindings: map[string]sql.Expression{
+			"v1": expression.NewLiteral(1, sql.Int8),
+			"v2": expression.NewLiteral(1, sql.Int8),
+		},
+		Expected: []sql.Row{{int64(3)}},
 	},
 	{
 		Query:    "SELECT i FROM mytable WHERE i NOT IN (SELECT i FROM (SELECT * FROM (SELECT i as i, s as s FROM mytable) f) s)",
@@ -1278,6 +1331,126 @@ var QueryTests = []QueryTest{
 	{
 		Query:    "SELECT i FROM niltable WHERE i2 IS NOT NULL ORDER BY 1",
 		Expected: []sql.Row{{int64(2)}, {int64(4)}, {int64(6)}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col = date('2019-12-31T12:00:00')",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col = '2019-12-31T00:00:00'",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col = '2019-12-31T00:00:01'",
+		Expected: []sql.Row{},
+	},
+	{
+		Query:    "select i from datetime_table where date_col = '2019-12-31'",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col = '2019/12/31'",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col > '2019-12-31' order by 1",
+		Expected: []sql.Row{{2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col >= '2019-12-31' order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col > '2019/12/31' order by 1",
+		Expected: []sql.Row{{2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where date_col > '2019-12-31T00:00:01' order by 1",
+		Expected: []sql.Row{{2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col = date('2020-01-01T12:00:00')",
+		Expected: []sql.Row{},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col = '2020-01-01T12:00:00'",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col = datetime('2020-01-01T12:00:00')",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col = '2020-01-01T12:00:01'",
+		Expected: []sql.Row{},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col > '2020-01-01T12:00:00' order by 1",
+		Expected: []sql.Row{{2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col > '2020-01-01' order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col >= '2020-01-01' order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col > '2020/01/01' order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where datetime_col > datetime('2020-01-01T12:00:00') order by 1",
+		Expected: []sql.Row{{2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col = date('2020-01-02T12:00:00')",
+		Expected: []sql.Row{},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col = '2020-01-02T12:00:00'",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col = datetime('2020-01-02T12:00:00')",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col = timestamp('2020-01-02T12:00:00')",
+		Expected: []sql.Row{{1}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col = '2020-01-02T12:00:01'",
+		Expected: []sql.Row{},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col > '2020-01-02T12:00:00' order by 1",
+		Expected: []sql.Row{{2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col > '2020-01-02' order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col >= '2020-01-02' order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col > '2020/01/02' order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "select i from datetime_table where timestamp_col > datetime('2020-01-02T12:00:00') order by 1",
+		Expected: []sql.Row{{2}, {3}},
+	},
+	{
+		Query:    "SELECT dt1.i FROM datetime_table dt1 join datetime_table dt2 on dt1.timestamp_col = dt2.timestamp_col order by 1",
+		Expected: []sql.Row{{1}, {2}, {3}},
+	},
+	{
+		Query:    "SELECT dt1.i FROM datetime_table dt1 join datetime_table dt2 on dt1.date_col = date(date_sub(dt2.timestamp_col, interval 2 day)) order by 1",
+		Expected: []sql.Row{{1}, {2}},
 	},
 	{
 		Query:    "SELECT COUNT(*) FROM mytable;",
@@ -1394,7 +1567,7 @@ var QueryTests = []QueryTest{
 		Expected: []sql.Row{{int64(1)}},
 	},
 	{
-		Query:    "SELECT id FROM typestable WHERE da > '2019-12-31'",
+		Query:    "SELECT id FROM typestable WHERE da = '2019-12-31'",
 		Expected: []sql.Row{{int64(1)}},
 	},
 	{
@@ -1443,6 +1616,28 @@ var QueryTests = []QueryTest{
 	},
 	{
 		Query:    "SELECT id FROM typestable WHERE da < date_sub('2020-01-01', INTERVAL 1 DAY)",
+		Expected: nil,
+	},
+	{
+		Query: `SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM othertable) othertable_one) othertable_two) othertable_three WHERE s2 = 'first'`,
+		Expected: []sql.Row{
+			{"first", int64(3)},
+		},
+	},
+	{
+		Query: `SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM othertable WHERE s2 = 'first') othertable_one) othertable_two) othertable_three WHERE s2 = 'first'`,
+		Expected: []sql.Row{
+			{"first", int64(3)},
+		},
+	},
+	{
+		Query: `SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM othertable WHERE i2 = 3) othertable_one) othertable_two) othertable_three WHERE s2 = 'first'`,
+		Expected: []sql.Row{
+			{"first", int64(3)},
+		},
+	},
+	{
+		Query:    `SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM othertable WHERE s2 = 'second') othertable_one) othertable_two) othertable_three WHERE s2 = 'first'`,
 		Expected: nil,
 	},
 	{
@@ -1610,6 +1805,54 @@ var QueryTests = []QueryTest{
 			{1, 1},
 			{2, 2},
 			{3, 3},
+		},
+	},
+	{
+		Query: "SELECT i, s, i2, s2 FROM mytable INNER JOIN othertable ON i = i2 OR s = s2 order by 1",
+		Expected: []sql.Row{
+			{1, "first row", 1, "third"},
+			{2, "second row", 2, "second"},
+			{3, "third row", 3, "first"},
+		},
+	},
+	{
+		Query: "SELECT i, s, i2, s2 FROM mytable INNER JOIN othertable ON i = i2 OR SUBSTRING_INDEX(s, ' ', 1) = s2 order by 1, 3",
+		Expected: []sql.Row{
+			{1, "first row", 1, "third"},
+			{1, "first row", 3, "first"},
+			{2, "second row", 2, "second"},
+			{3, "third row", 1, "third"},
+			{3, "third row", 3, "first"},
+		},
+	},
+	{
+		Query: "SELECT i, s, i2, s2 FROM mytable INNER JOIN othertable ON i = i2 OR SUBSTRING_INDEX(s, ' ', 1) = s2 OR SUBSTRING_INDEX(s, ' ', 2) = s2 order by 1, 3",
+		Expected: []sql.Row{
+			{1, "first row", 1, "third"},
+			{1, "first row", 3, "first"},
+			{2, "second row", 2, "second"},
+			{3, "third row", 1, "third"},
+			{3, "third row", 3, "first"},
+		},
+	},
+	{
+		Query: "SELECT i, s, i2, s2 FROM mytable INNER JOIN othertable ON i = i2 OR SUBSTRING_INDEX(s, ' ', 2) = s2 OR SUBSTRING_INDEX(s, ' ', 1) = s2 order by 1, 3",
+		Expected: []sql.Row{
+			{1, "first row", 1, "third"},
+			{1, "first row", 3, "first"},
+			{2, "second row", 2, "second"},
+			{3, "third row", 1, "third"},
+			{3, "third row", 3, "first"},
+		},
+	},
+	{
+		Query: "SELECT i, s, i2, s2 FROM mytable INNER JOIN othertable ON SUBSTRING_INDEX(s, ' ', 2) = s2 OR SUBSTRING_INDEX(s, ' ', 1) = s2 OR i = i2 order by 1, 3",
+		Expected: []sql.Row{
+			{1, "first row", 1, "third"},
+			{1, "first row", 3, "first"},
+			{2, "second row", 2, "second"},
+			{3, "third row", 1, "third"},
+			{3, "third row", 3, "first"},
 		},
 	},
 	{
@@ -2181,6 +2424,22 @@ var QueryTests = []QueryTest{
 			{64},
 		},
 	},
+	{
+		Query: "select date_format(datetime_col, '%D') from datetime_table order by 1",
+		Expected: []sql.Row{
+			{"1st"},
+			{"4th"},
+			{"7th"},
+		},
+	},
+	{
+		Query: "select from_unixtime(i) from mytable order by 1",
+		Expected: []sql.Row{
+			{time.Unix(1, 0)},
+			{time.Unix(2, 0)},
+			{time.Unix(3, 0)},
+		},
+	},
 	// TODO: add additional tests for other functions. Every function needs an engine test to ensure it works correctly
 	//  with the analyzer.
 	{
@@ -2322,6 +2581,13 @@ var QueryTests = []QueryTest{
 		},
 	},
 	{
+		Query: `SELECT s FROM mytable WHERE s LIKE '%D ROW'`,
+		Expected: []sql.Row{
+			{"second row"},
+			{"third row"},
+		},
+	},
+	{
 		Query: `SELECT SUBSTRING(s, -3, 3) AS s FROM mytable WHERE s LIKE '%d row' GROUP BY 1`,
 		Expected: []sql.Row{
 			{"row"},
@@ -2437,6 +2703,30 @@ var QueryTests = []QueryTest{
 	{
 		Query:    `SELECT JSON_UNQUOTE('"\t\\u0032"')`,
 		Expected: []sql.Row{{"\t2"}},
+	},
+	{
+		Query:    `SELECT JSON_UNQUOTE(JSON_EXTRACT('{"xid":"hello"}', '$.xid')) = "hello"`,
+		Expected: []sql.Row{{true}},
+	},
+	{
+		Query:    `SELECT JSON_EXTRACT('{"xid":"hello"}', '$.xid') = "hello"`,
+		Expected: []sql.Row{{true}},
+	},
+	{
+		Query:    `SELECT JSON_EXTRACT('{"xid":"hello"}', '$.xid') = '"hello"'`,
+		Expected: []sql.Row{{false}},
+	},
+	{
+		Query:    `SELECT JSON_UNQUOTE(JSON_EXTRACT('{"xid":null}', '$.xid'))`,
+		Expected: []sql.Row{{"null"}},
+	},
+	{
+		Query:    `select JSON_EXTRACT('{"id":234}', '$.id')-1;`,
+		Expected: []sql.Row{{233.0}},
+	},
+	{
+		Query:    `select JSON_EXTRACT('{"id":234}', '$.id') = 234;`,
+		Expected: []sql.Row{{true}},
 	},
 	{
 		Query:    `SELECT CONNECTION_ID()`,
@@ -2663,29 +2953,29 @@ var QueryTests = []QueryTest{
 			{
 				sql.Collation_binary.String(),
 				"binary",
-				sql.CollationToMySQLVals[sql.Collation_binary].ID,
-				sql.CollationToMySQLVals[sql.Collation_binary].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_binary].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_binary].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_binary].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].PadSpace,
 			},
 			{
 				sql.Collation_utf8_general_ci.String(),
 				"utf8",
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].ID,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].PadSpace,
 			},
 			{
 				sql.Collation_utf8mb4_0900_ai_ci.String(),
 				"utf8mb4",
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].ID,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].PadSpace,
 			},
 		},
 	},
@@ -2699,20 +2989,20 @@ var QueryTests = []QueryTest{
 			{
 				sql.Collation_utf8_general_ci.String(),
 				"utf8",
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].ID,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].PadSpace,
 			},
 			{
 				sql.Collation_utf8mb4_0900_ai_ci.String(),
 				"utf8mb4",
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].ID,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].PadSpace,
 			},
 		},
 	},
@@ -2726,29 +3016,29 @@ var QueryTests = []QueryTest{
 			{
 				sql.Collation_binary.String(),
 				"binary",
-				sql.CollationToMySQLVals[sql.Collation_binary].ID,
-				sql.CollationToMySQLVals[sql.Collation_binary].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_binary].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_binary].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_binary].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_binary.Name].PadSpace,
 			},
 			{
 				sql.Collation_utf8_general_ci.String(),
 				"utf8",
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].ID,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_utf8_general_ci.Name].PadSpace,
 			},
 			{
 				sql.Collation_utf8mb4_0900_ai_ci.String(),
 				"utf8mb4",
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].ID,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].IsDefault,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].IsCompiled,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].SortLen,
-				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci].PadSpace,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].ID,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].IsDefault,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].IsCompiled,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].SortLen,
+				sql.CollationToMySQLVals[sql.Collation_utf8mb4_0900_ai_ci.Name].PadSpace,
 			},
 		},
 	},
@@ -3371,32 +3661,26 @@ var QueryTests = []QueryTest{
 		Expected: []sql.Row{{"mydb", "mytable", "TABLE"}},
 	},
 	{
-		Query:    `SELECT REGEXP_MATCHES("bopbeepbop", "bop")`,
-		Expected: []sql.Row{{[]interface{}{"bop", "bop"}}},
+		Query: "SELECT REGEXP_LIKE('testing', 'TESTING');",
+		Expected: []sql.Row{
+			{1},
+		},
 	},
 	{
-		Query:    `SELECT EXPLODE(REGEXP_MATCHES("bopbeepbop", "bop"))`,
-		Expected: []sql.Row{{"bop"}, {"bop"}},
+		Query: "SELECT REGEXP_LIKE('testing', 'TESTING') FROM mytable;",
+		Expected: []sql.Row{
+			{1},
+			{1},
+			{1},
+		},
 	},
 	{
-		Query:    `SELECT EXPLODE(REGEXP_MATCHES("helloworld", "bop"))`,
-		Expected: nil,
-	},
-	{
-		Query:    `SELECT EXPLODE(REGEXP_MATCHES("", ""))`,
-		Expected: []sql.Row{{""}},
-	},
-	{
-		Query:    `SELECT REGEXP_MATCHES(NULL, "")`,
-		Expected: []sql.Row{{nil}},
-	},
-	{
-		Query:    `SELECT REGEXP_MATCHES("", NULL)`,
-		Expected: []sql.Row{{nil}},
-	},
-	{
-		Query:    `SELECT REGEXP_MATCHES("", "", NULL)`,
-		Expected: []sql.Row{{nil}},
+		Query: "SELECT i, s, REGEXP_LIKE(s, '[a-z]+d row') FROM mytable;",
+		Expected: []sql.Row{
+			{1, "first row", 0},
+			{2, "second row", 1},
+			{3, "third row", 1},
+		},
 	},
 	{
 		Query: "SELECT * FROM newlinetable WHERE s LIKE '%text%'",
@@ -4748,6 +5032,57 @@ var QueryTests = []QueryTest{
 			{nil},
 		},
 	},
+	{
+		Query:    "SELECT JSON_CONTAINS(NULL, 1)",
+		Expected: []sql.Row{{nil}},
+	},
+	{
+		Query:    "SELECT JSON_CONTAINS(1, NULL)",
+		Expected: []sql.Row{{nil}},
+	},
+	{
+		Query:    "SELECT JSON_CONTAINS(1, NULL, '$.a')",
+		Expected: []sql.Row{{nil}},
+	},
+	{
+		Query:    `SELECT JSON_CONTAINS('{"a": 1, "b": 2, "c": {"d": 4}}', '1', '$.a')`,
+		Expected: []sql.Row{{true}},
+	},
+	{
+		Query:    `SELECT JSON_CONTAINS('{"a": 1, "b": 2, "c": {"d": 4}}', '1', '$.b')`,
+		Expected: []sql.Row{{false}},
+	},
+	{
+		Query:    `SELECT JSON_CONTAINS('{"a": 1, "b": 2, "c": {"d": 4}}', '{"d": 4}', '$.a')`,
+		Expected: []sql.Row{{false}},
+	},
+	{
+		Query:    `SELECT JSON_CONTAINS('{"a": 1, "b": 2, "c": {"d": 4}}', '{"d": 4}', '$.c')`,
+		Expected: []sql.Row{{true}},
+	},
+	{
+		Query: "select one_pk.pk, one_pk.c1 from one_pk join two_pk on one_pk.c1 = two_pk.c1 order by two_pk.c1",
+		Expected: []sql.Row{
+			{0, 0},
+			{1, 10},
+			{2, 20},
+			{3, 30},
+		},
+	},
+	{
+		Query: `SELECT JSON_OBJECT("i",i,"s",s) as js FROM mytable;`,
+		Expected: []sql.Row{
+			{sql.MustJSON(`{"i": 1, "s": "first row"}`)},
+			{sql.MustJSON(`{"i": 2, "s": "second row"}`)},
+			{sql.MustJSON(`{"i": 3, "s": "third row"}`)},
+		},
+		ExpectedColumns: sql.Schema{
+			{
+				Name: "js",
+				Type: sql.JSON,
+			},
+		},
+	},
 }
 
 var KeylessQueries = []QueryTest{
@@ -4954,11 +5289,6 @@ var BrokenQueries = []QueryTest{
 	{
 		Query: "SELECT json_value() FROM dual;",
 	},
-	// This isn't broken, it's just difficult to test this. We want to evaluate date_format with a column argument.
-	// FROM_UNIXTIME() would be great to have here.
-	{
-		Query: "select date_format(unix_timestamp(i), '%s') from mytable order by 1",
-	},
 	// This gets an error "unable to cast "second row" of type string to int64"
 	// Should throw sql.ErrAmbiguousColumnInOrderBy
 	{
@@ -5108,6 +5438,7 @@ var InfoSchemaQueries = []QueryTest{
 			{"othertable"},
 			{"tabletest"},
 			{"people"},
+			{"datetime_table"},
 		},
 	},
 	{
@@ -5124,6 +5455,7 @@ var InfoSchemaQueries = []QueryTest{
 			{"othertable", "BASE TABLE"},
 			{"tabletest", "BASE TABLE"},
 			{"people", "BASE TABLE"},
+			{"datetime_table", "BASE TABLE"},
 		},
 	},
 	{
@@ -5141,6 +5473,7 @@ var InfoSchemaQueries = []QueryTest{
 			{"floattable"},
 			{"niltable"},
 			{"newlinetable"},
+			{"datetime_table"},
 		},
 	},
 	{
@@ -5239,6 +5572,7 @@ var InfoSchemaQueries = []QueryTest{
 		Expected: []sql.Row{
 			{"auto_increment_tbl"},
 			{"bigtable"},
+			{"datetime_table"},
 			{"fk_tbl"},
 			{"floattable"},
 			{"mytable"},
@@ -5277,6 +5611,9 @@ var InfoSchemaQueries = []QueryTest{
 			{"f64"},
 			{"b"},
 			{"f"},
+			{"date_col"},
+			{"datetime_col"},
+			{"timestamp_col"},
 		},
 	},
 	{
@@ -5296,6 +5633,9 @@ var InfoSchemaQueries = []QueryTest{
 			{"f64"},
 			{"b"},
 			{"f"},
+			{"date_col"},
+			{"datetime_col"},
+			{"timestamp_col"},
 		},
 	},
 	{
@@ -5315,6 +5655,9 @@ var InfoSchemaQueries = []QueryTest{
 			{"f64"},
 			{"b"},
 			{"f"},
+			{"date_col"},
+			{"datetime_col"},
+			{"timestamp_col"},
 		},
 	},
 	{
@@ -5374,6 +5717,7 @@ var InfoSchemaQueries = []QueryTest{
 		Expected: []sql.Row{
 			{"auto_increment_tbl", 4},
 			{"bigtable", nil},
+			{"datetime_table", nil},
 			{"fk_tbl", nil},
 			{"floattable", nil},
 			{"mytable", nil},
@@ -5395,6 +5739,7 @@ var InfoSchemaQueries = []QueryTest{
 		Expected: []sql.Row{
 			{"def", "mydb", "PRIMARY", "mydb", "auto_increment_tbl", "PRIMARY KEY", "YES"},
 			{"def", "mydb", "PRIMARY", "mydb", "bigtable", "PRIMARY KEY", "YES"},
+			{"def", "mydb", "PRIMARY", "mydb", "datetime_table", "PRIMARY KEY", "YES"},
 			{"def", "mydb", "fk1", "mydb", "fk_tbl", "FOREIGN KEY", "YES"},
 			{"def", "mydb", "PRIMARY", "mydb", "fk_tbl", "PRIMARY KEY", "YES"},
 			{"def", "mydb", "PRIMARY", "mydb", "floattable", "PRIMARY KEY", "YES"},
@@ -5418,6 +5763,7 @@ var InfoSchemaQueries = []QueryTest{
 			{"def", "foo", "PRIMARY", "def", "foo", "other_table", "text", 1, nil, nil, nil, nil},
 			{"def", "mydb", "PRIMARY", "def", "mydb", "auto_increment_tbl", "pk", 1, nil, nil, nil, nil},
 			{"def", "mydb", "PRIMARY", "def", "mydb", "bigtable", "t", 1, nil, nil, nil, nil},
+			{"def", "mydb", "PRIMARY", "def", "mydb", "datetime_table", "i", 1, nil, nil, nil, nil},
 			{"def", "mydb", "PRIMARY", "def", "mydb", "fk_tbl", "pk", 1, nil, nil, nil, nil},
 			{"def", "mydb", "fk1", "def", "mydb", "fk_tbl", "a", 1, 1, "mydb", "mytable", "i"},
 			{"def", "mydb", "fk1", "def", "mydb", "fk_tbl", "b", 2, 2, "mydb", "mytable", "s"},
@@ -5434,6 +5780,10 @@ var InfoSchemaQueries = []QueryTest{
 			{"def", "mydb", "PRIMARY", "def", "mydb", "tabletest", "i", 1, nil, nil, nil, nil},
 		},
 	},
+	{
+		Query:    "SELECT * FROM information_schema.partitions",
+		Expected: []sql.Row{},
+	},
 }
 
 var InfoSchemaScripts = []ScriptTest{
@@ -5447,30 +5797,6 @@ var InfoSchemaScripts = []ScriptTest{
 				Query: "describe auto;",
 				Expected: []sql.Row{
 					{"pk", "int", "NO", "PRI", "", "auto_increment"},
-				},
-			},
-		},
-	},
-	{
-		Name: "Create a table with a check and validate that it appears in check_constraints and table_constraints",
-		SetUpScript: []string{
-			"CREATE TABLE mytable (pk int primary key, test_score int, height int, CONSTRAINT mycheck CHECK (test_score >= 50), CONSTRAINT hcheck CHECK (height < 10), CONSTRAINT vcheck CHECK (height > 0))",
-		},
-		Assertions: []ScriptTestAssertion{
-			{
-				Query: "SELECT * from information_schema.check_constraints where constraint_name IN ('mycheck', 'hcheck') ORDER BY constraint_name",
-				Expected: []sql.Row{
-					{"def", "mydb", "hcheck", "height < 10"},
-					{"def", "mydb", "mycheck", "test_score >= 50"},
-				},
-			},
-			{
-				Query: "SELECT * FROM information_schema.table_constraints where table_name='mytable' ORDER BY constraint_type,constraint_name",
-				Expected: []sql.Row{
-					{"def", "mydb", "hcheck", "mydb", "mytable", "CHECK", "YES"},
-					{"def", "mydb", "mycheck", "mydb", "mytable", "CHECK", "YES"},
-					{"def", "mydb", "vcheck", "mydb", "mytable", "CHECK", "YES"},
-					{"def", "mydb", "PRIMARY", "mydb", "mytable", "PRIMARY KEY", "YES"},
 				},
 			},
 		},
@@ -5588,8 +5914,10 @@ var ExplodeQueries = []QueryTest{
 }
 
 type QueryErrorTest struct {
-	Query       string
-	ExpectedErr *errors.Kind
+	Query          string
+	Bindings       map[string]sql.Expression
+	ExpectedErr    *errors.Kind
+	ExpectedErrStr string
 }
 
 var errorQueries = []QueryErrorTest{
@@ -5791,6 +6119,50 @@ var errorQueries = []QueryErrorTest{
 	{
 		Query:       "SELECT a FROM (select i,s FROM mytable) mt (a,b,c) order by a desc;",
 		ExpectedErr: sql.ErrColumnCountMismatch,
+	},
+	{
+		Query:       "SELECT i FROM mytable limit ?",
+		ExpectedErr: sql.ErrInvalidSyntax,
+		Bindings: map[string]sql.Expression{
+			"v1": expression.NewLiteral(-100, sql.Int8),
+		},
+	},
+	{
+		Query:       "SELECT i FROM mytable limit ?",
+		ExpectedErr: sql.ErrInvalidType,
+		Bindings: map[string]sql.Expression{
+			"v1": expression.NewLiteral("100", sql.LongText),
+		},
+	},
+	{
+		Query:       "SELECT i FROM mytable limit 10, ?",
+		ExpectedErr: sql.ErrInvalidSyntax,
+		Bindings: map[string]sql.Expression{
+			"v1": expression.NewLiteral(-100, sql.Int8),
+		},
+	},
+	{
+		Query:       "SELECT i FROM mytable limit 10, ?",
+		ExpectedErr: sql.ErrInvalidType,
+		Bindings: map[string]sql.Expression{
+			"v1": expression.NewLiteral("100", sql.LongText),
+		},
+	},
+	{
+		Query:       `SELECT JSON_OBJECT("a","b","c") FROM dual`,
+		ExpectedErr: sql.ErrInvalidArgumentNumber,
+	},
+	{
+		Query:       `SELECT JSON_OBJECT(1, 2) FROM dual`,
+		ExpectedErr: sql.ErrInvalidType,
+	},
+	{
+		Query:          `select JSON_EXTRACT('{"id":"abc"}', '$.id')-1;`,
+		ExpectedErrStr: "unable to cast \"abc\" of type string to float64",
+	},
+	{
+		Query:          `select JSON_EXTRACT('{"id":{"a": "abc"}}', '$.id')-1;`,
+		ExpectedErrStr: `unable to cast map[string]interface {}{"a":"abc"} of type map[string]interface {} to float64`,
 	},
 }
 
@@ -6014,6 +6386,7 @@ var ShowTableStatusQueries = []QueryTest{
 			{"niltable", "InnoDB", "10", "Fixed", uint64(6), uint64(32), uint64(192), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 			{"newlinetable", "InnoDB", "10", "Fixed", uint64(5), uint64(65540), uint64(327700), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 			{"people", "InnoDB", "10", "Fixed", uint64(5), uint64(196620), uint64(983100), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
+			{"datetime_table", "InnoDB", "10", "Fixed", uint64(3), uint64(32), uint64(96), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 		},
 	},
 	{
@@ -6025,6 +6398,7 @@ var ShowTableStatusQueries = []QueryTest{
 			{"floattable", "InnoDB", "10", "Fixed", uint64(6), uint64(24), uint64(144), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 			{"niltable", "InnoDB", "10", "Fixed", uint64(6), uint64(32), uint64(192), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 			{"newlinetable", "InnoDB", "10", "Fixed", uint64(5), uint64(65540), uint64(327700), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
+			{"datetime_table", "InnoDB", "10", "Fixed", uint64(3), uint64(32), uint64(96), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 		},
 	},
 	{
@@ -6052,6 +6426,7 @@ var ShowTableStatusQueries = []QueryTest{
 			{"niltable", "InnoDB", "10", "Fixed", uint64(6), uint64(32), uint64(192), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 			{"newlinetable", "InnoDB", "10", "Fixed", uint64(5), uint64(65540), uint64(327700), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 			{"people", "InnoDB", "10", "Fixed", uint64(5), uint64(196620), uint64(983100), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
+			{"datetime_table", "InnoDB", "10", "Fixed", uint64(3), uint64(32), uint64(96), uint64(0), int64(0), int64(0), nil, nil, nil, nil, "utf8mb4_0900_ai_ci", nil, nil, nil},
 		},
 	},
 	{

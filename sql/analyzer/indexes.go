@@ -67,7 +67,7 @@ func getIndexesByTable(ctx *sql.Context, a *Analyzer, node sql.Node, scope *Scop
 		defer indexAnalyzer.releaseUsedIndexes()
 
 		var result indexLookupsByTable
-		filterExpression := convertIsNullForIndexes(filter.Expression)
+		filterExpression := convertIsNullForIndexes(ctx, filter.Expression)
 		result, err = getIndexes(ctx, a, indexAnalyzer, filterExpression, tableAliases)
 		if err != nil {
 			return false
@@ -163,7 +163,7 @@ func getIndexes(
 		// the right branch is evaluable and the indexlookup supports set
 		// operations.
 		if !isEvaluable(e.Left()) && isEvaluable(e.Right()) {
-			idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, e.Left())...)
+			idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, e.Left())...)
 			if idx != nil {
 				value, err := e.Right().Eval(sql.NewEmptyContext(), nil)
 				if err != nil {
@@ -201,7 +201,12 @@ func getIndexes(
 					return nil, err
 				}
 
-				result[idx.Table()] = &indexLookup{
+				getField := extractGetField(e.Left())
+				if getField == nil {
+					return result, nil
+				}
+
+				result[getField.Table()] = &indexLookup{
 					exprs:   []sql.Expression{e},
 					indexes: []sql.Index{idx},
 					lookup:  lookup,
@@ -238,7 +243,7 @@ func getIndexes(
 		}
 	case *expression.Between:
 		if !isEvaluable(e.Val) && isEvaluable(e.Upper) && isEvaluable(e.Lower) {
-			idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, e.Val)...)
+			idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, e.Val)...)
 			if idx != nil {
 
 				upper, err := e.Upper.Eval(sql.NewEmptyContext(), nil)
@@ -260,8 +265,13 @@ func getIndexes(
 					return nil, err
 				}
 
-				result[idx.Table()] = &indexLookup{
-					exprs:   []sql.Expression{extractGetField(e)},
+				getField := extractGetField(e)
+				if getField == nil {
+					return result, nil
+				}
+
+				result[getField.Table()] = &indexLookup{
+					exprs:   []sql.Expression{getField},
 					indexes: []sql.Index{idx},
 					lookup:  lookup,
 				}
@@ -280,7 +290,7 @@ func getIndexes(
 		// Next try to match the remaining expressions individually
 		for _, e := range exprs {
 			// But don't handle any expressions already captured by used multi-column indexes
-			if indexHasExpression(multiColumnIndexes, normalizeExpression(tableAliases, e)) {
+			if indexHasExpression(multiColumnIndexes, normalizeExpression(ctx, tableAliases, e)) {
 				continue
 			}
 
@@ -372,7 +382,7 @@ func getComparisonIndexLookup(
 	}
 
 	if !isEvaluable(left) && isEvaluable(right) {
-		idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, left)...)
+		idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, left)...)
 		if idx != nil {
 			value, err := right.Eval(sql.NewEmptyContext(), nil)
 			if err != nil {
@@ -477,7 +487,7 @@ func getNegatedIndexes(
 			return nil, nil
 		}
 
-		idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, left)...)
+		idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, left)...)
 		if idx == nil {
 			return nil, nil
 		}
@@ -497,8 +507,13 @@ func getNegatedIndexes(
 			return nil, err
 		}
 
+		getField := extractGetField(left)
+		if getField == nil {
+			return nil, nil
+		}
+
 		result := indexLookupsByTable{
-			idx.Table(): {
+			getField.Table(): {
 				exprs:   []sql.Expression{left},
 				indexes: []sql.Index{idx},
 				lookup:  lookup,
@@ -511,7 +526,7 @@ func getNegatedIndexes(
 		// the right branch is evaluable and the indexlookup supports set
 		// operations.
 		if !isEvaluable(e.Left()) && isEvaluable(e.Right()) {
-			idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, e.Left())...)
+			idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, e.Left())...)
 			if idx != nil {
 				nidx, ok := idx.(sql.NegateIndex)
 				if !ok {
@@ -550,8 +565,13 @@ func getNegatedIndexes(
 					}
 				}
 
+				getField := extractGetField(e.Left())
+				if getField == nil {
+					return nil, nil
+				}
+
 				return indexLookupsByTable{
-					idx.Table(): {
+					getField.Table(): {
 						exprs:   []sql.Expression{e.Left()},
 						indexes: []sql.Index{idx},
 						lookup:  lookup,
@@ -705,7 +725,7 @@ func getMultiColumnIndexForExpressions(
 	tableAliases TableAliases,
 ) (*indexLookup, error) {
 
-	index := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, selected...)...)
+	index := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, selected...)...)
 	if index == nil {
 		return nil, nil
 	}
@@ -1082,8 +1102,8 @@ func canMergeIndexes(a, b sql.IndexLookup) bool {
 
 // convertIsNullForIndexes converts all nested IsNull(col) expressions to Equals(col, nil) expressions, as they are
 // equivalent as far as the index interfaces are concerned.
-func convertIsNullForIndexes(e sql.Expression) sql.Expression {
-	expr, _ := expression.TransformUp(e, func(e sql.Expression) (sql.Expression, error) {
+func convertIsNullForIndexes(ctx *sql.Context, e sql.Expression) sql.Expression {
+	expr, _ := expression.TransformUp(ctx, e, func(e sql.Expression) (sql.Expression, error) {
 		isNull, ok := e.(*expression.IsNull)
 		if !ok {
 			return e, nil

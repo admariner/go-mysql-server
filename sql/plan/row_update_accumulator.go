@@ -19,6 +19,8 @@ import (
 	"io"
 	"sync"
 
+	"github.com/dolthub/vitess/go/mysql"
+
 	"github.com/dolthub/go-mysql-server/sql"
 )
 
@@ -115,8 +117,9 @@ func (r *replaceRowHandler) okResult() sql.OkResult {
 }
 
 type onDuplicateUpdateHandler struct {
-	rowsAffected int
-	schema       sql.Schema
+	rowsAffected              int
+	schema                    sql.Schema
+	clientFoundRowsCapability bool
 }
 
 func (o *onDuplicateUpdateHandler) handleRowUpdate(row sql.Row) error {
@@ -131,7 +134,12 @@ func (o *onDuplicateUpdateHandler) handleRowUpdate(row sql.Row) error {
 	oldRow := row[:len(row)/2]
 	newRow := row[len(row)/2:]
 	if equals, err := oldRow.Equals(newRow, o.schema); err == nil {
-		if !equals {
+		if equals {
+			// Ig the CLIENT_FOUND_ROWS capabilities flag is set, increment by 1 if a row stays the same.
+			if o.clientFoundRowsCapability {
+				o.rowsAffected++
+			}
+		} else {
 			o.rowsAffected += 2
 		}
 	} else {
@@ -230,6 +238,13 @@ func (a *accumulatorIter) Close(ctx *sql.Context) error {
 
 	result := a.updateRowHandler.okResult()
 	ctx.SetLastQueryInfo(sql.RowCount, int64(result.RowsAffected))
+
+	// For UPDATE, the affected-rows value is the number of rows “found”; that is, matched by the WHERE clause for FOUND_ROWS
+	// cc. https://dev.mysql.com/doc/c-api/8.0/en/mysql-affected-rows.html
+	if au, ok := a.updateRowHandler.(*updateRowHandler); ok {
+		ctx.SetLastQueryInfo(sql.FoundRows, int64(au.rowsMatched))
+	}
+
 	return nil
 }
 
@@ -246,7 +261,8 @@ func (r RowUpdateAccumulator) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIte
 	case UpdateTypeReplace:
 		rowHandler = &replaceRowHandler{}
 	case UpdateTypeDuplicateKeyUpdate:
-		rowHandler = &onDuplicateUpdateHandler{schema: r.Child.Schema()}
+		clientFoundRowsToggled := (ctx.Client().Capabilities & mysql.CapabilityClientFoundRows) == mysql.CapabilityClientFoundRows
+		rowHandler = &onDuplicateUpdateHandler{schema: r.Child.Schema(), clientFoundRowsCapability: clientFoundRowsToggled}
 	case UpdateTypeUpdate:
 		schema := r.Child.Schema()
 		// the schema of the update node is a self-concatenation of the underlying table's, so split it in half for new /

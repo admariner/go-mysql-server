@@ -21,6 +21,7 @@ import (
 // OnceBeforeDefault contains the rules to be applied just once before the
 // DefaultRules.
 var OnceBeforeDefault = []Rule{
+	{"validate_offset_and_limit", validateLimitAndOffset},
 	{"load_stored_procedures", loadStoredProcedures},
 	{"resolve_views", resolveViews},
 	{"lift_common_table_expressions", liftCommonTableExpressions},
@@ -31,6 +32,7 @@ var OnceBeforeDefault = []Rule{
 	{"load_check_constraints", loadChecks},
 	{"resolve_set_variables", resolveSetVariables},
 	{"resolve_create_like", resolveCreateLike},
+	{"resolve_create_select", resolveCreateSelect},
 	{"resolve_subqueries", resolveSubqueries},
 	{"resolve_unions", resolveUnions},
 	{"resolve_describe_query", resolveDescribeQuery},
@@ -39,6 +41,7 @@ var OnceBeforeDefault = []Rule{
 	{"validate_create_trigger", validateCreateTrigger},
 	{"validate_create_procedure", validateCreateProcedure},
 	{"assign_info_schema", assignInfoSchema},
+	{"validate_read_only_database", validateReadOnlyDatabase},
 }
 
 // DefaultRules to apply when analyzing nodes.
@@ -49,6 +52,7 @@ var DefaultRules = []Rule{
 	{"flatten_table_aliases", flattenTableAliases},
 	{"pushdown_sort", pushdownSort},
 	{"pushdown_groupby_aliases", pushdownGroupByAliases},
+	{"pushdown_subquery_alias_filters", pushdownSubqueryAliasFilters},
 	{"qualify_columns", qualifyColumns},
 	{"resolve_columns", resolveColumns},
 	{"validate_check_constraint", validateCreateCheck},
@@ -68,6 +72,8 @@ var DefaultRules = []Rule{
 // OnceAfterDefault contains the rules to be applied just once after the
 // DefaultRules.
 var OnceAfterDefault = []Rule{
+	{"finalize_subqueries", finalizeSubqueries},
+	{"finalize_unions", finalizeUnions},
 	{"load_triggers", loadTriggers},
 	{"process_truncate", processTruncate},
 	{"resolve_column_defaults", resolveColumnDefaults},
@@ -99,6 +105,7 @@ var OnceAfterDefault = []Rule{
 var OnceAfterAll = []Rule{
 	{"track_process", trackProcess},
 	{"parallelize", parallelize},
+	//	{"begin_transaction", beginTransaction}, // Disabled for now, implicit transactions are handled before analysis in handler.go
 	{"clear_warnings", clearWarnings},
 }
 

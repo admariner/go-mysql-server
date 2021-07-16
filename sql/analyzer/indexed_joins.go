@@ -34,7 +34,7 @@ func constructJoinPlan(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) 
 		return n, nil
 	}
 
-	if plan.IsDdlNode(n) {
+	if plan.IsNoRowNode(n) {
 		return n, nil
 	}
 
@@ -86,7 +86,7 @@ func replaceJoinPlans(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (
 	}
 
 	withIndexedTableAccess, replacedTableWithIndexedAccess, err := replaceTableAccessWithIndexedAccess(
-		newJoin, nil, scope, joinIndexes, tableAliases)
+		ctx, newJoin, a, nil, scope, joinIndexes, tableAliases)
 	if err != nil {
 		return nil, err
 	}
@@ -108,12 +108,43 @@ func replaceJoinPlans(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (
 // This is basically an in-order concatenation of columns in all tables to the left of the one being examined, including
 // from the left branches of parent nodes, which means there is no way to construct it given just the parent node.
 func replaceTableAccessWithIndexedAccess(
+	ctx *sql.Context,
 	node sql.Node,
+	a *Analyzer,
 	schema sql.Schema,
 	scope *Scope,
 	joinIndexes joinIndexesByTable,
 	tableAliases TableAliases,
 ) (sql.Node, bool, error) {
+
+	var toIndexedTableAccess func(node *plan.ResolvedTable, indexToApply *joinIndex) (sql.Node, bool, error)
+	toIndexedTableAccess = func(node *plan.ResolvedTable, indexToApply *joinIndex) (sql.Node, bool, error) {
+		if _, ok := node.Table.(sql.IndexAddressableTable); !ok {
+			return node, false, nil
+		}
+
+		if indexToApply.index != nil {
+			keyExprs := createIndexLookupKeyExpression(ctx, indexToApply, tableAliases)
+			keyExprs, err := FixFieldIndexesOnExpressions(ctx, scope, a, schema, keyExprs...)
+			if err != nil {
+				return nil, false, err
+			}
+			return plan.NewIndexedTableAccess(node, indexToApply.index, keyExprs), true, nil
+		} else {
+			ln, lr, lerr := toIndexedTableAccess(node, indexToApply.disjunction[0])
+			if lerr != nil {
+				return node, false, lerr
+			}
+			rn, rr, rerr := toIndexedTableAccess(node, indexToApply.disjunction[1])
+			if rerr != nil {
+				return node, false, rerr
+			}
+			if lr && rr {
+				return plan.NewTransformedNamedNode(plan.NewConcat(ln, rn), node.Name()), true, nil
+			}
+			return node, false, nil
+		}
+	}
 
 	switch node := node.(type) {
 	case *plan.TableAlias, *plan.ResolvedTable:
@@ -129,18 +160,9 @@ func replaceTableAccessWithIndexedAccess(
 		node, err := plan.TransformUp(node, func(node sql.Node) (sql.Node, error) {
 			switch node := node.(type) {
 			case *plan.ResolvedTable:
-				if _, ok := node.Table.(sql.IndexAddressableTable); !ok {
-					return node, nil
-				}
-
-				keyExprs := createIndexLookupKeyExpression(indexToApply, tableAliases)
-				keyExprs, err := FixFieldIndexesOnExpressions(scope, schema, keyExprs...)
-				if err != nil {
-					return nil, err
-				}
-
-				replaced = true
-				return plan.NewIndexedTableAccess(node, indexToApply.index, keyExprs), nil
+				n, r, err := toIndexedTableAccess(node, indexToApply)
+				replaced = r
+				return n, err
 			default:
 				return node, nil
 			}
@@ -153,7 +175,7 @@ func replaceTableAccessWithIndexedAccess(
 		return node, replaced, nil
 	case *plan.IndexedJoin:
 		// Recurse the down the left side with the input schema
-		left, replacedLeft, err := replaceTableAccessWithIndexedAccess(node.Left(), schema, scope, joinIndexes, tableAliases)
+		left, replacedLeft, err := replaceTableAccessWithIndexedAccess(ctx, node.Left(), a, schema, scope, joinIndexes, tableAliases)
 		if err != nil {
 			return nil, false, err
 		}
@@ -163,7 +185,7 @@ func replaceTableAccessWithIndexedAccess(
 		}
 
 		// then the right side, appending the schema from the left
-		right, replacedRight, err := replaceTableAccessWithIndexedAccess(node.Right(), append(schema, left.Schema()...), scope, joinIndexes, tableAliases)
+		right, replacedRight, err := replaceTableAccessWithIndexedAccess(ctx, node.Right(), a, append(schema, left.Schema()...), scope, joinIndexes, tableAliases)
 		if err != nil {
 			return nil, false, err
 		}
@@ -173,29 +195,29 @@ func replaceTableAccessWithIndexedAccess(
 		}
 
 		// the condition's field indexes might need adjusting if the order of tables changed
-		cond, err := FixFieldIndexes(scope, append(schema, append(left.Schema(), right.Schema()...)...), node.Cond)
+		cond, err := FixFieldIndexes(ctx, scope, a, append(schema, append(left.Schema(), right.Schema()...)...), node.Cond)
 		if err != nil {
 			return nil, false, err
 		}
 
 		return plan.NewIndexedJoin(left, right, node.JoinType(), cond, len(scope.Schema())), replacedLeft || replacedRight, nil
 	case *plan.Limit:
-		return replaceIndexedAccessInUnaryNode(node.UnaryNode, node, schema, scope, joinIndexes, tableAliases)
+		return replaceIndexedAccessInUnaryNode(ctx, node.UnaryNode, node, a, schema, scope, joinIndexes, tableAliases)
 	case *plan.Sort:
-		return replaceIndexedAccessInUnaryNode(node.UnaryNode, node, schema, scope, joinIndexes, tableAliases)
+		return replaceIndexedAccessInUnaryNode(ctx, node.UnaryNode, node, a, schema, scope, joinIndexes, tableAliases)
 	case *plan.Filter:
-		return replaceIndexedAccessInUnaryNode(node.UnaryNode, node, schema, scope, joinIndexes, tableAliases)
+		return replaceIndexedAccessInUnaryNode(ctx, node.UnaryNode, node, a, schema, scope, joinIndexes, tableAliases)
 	case *plan.Project:
-		return replaceIndexedAccessInUnaryNode(node.UnaryNode, node, schema, scope, joinIndexes, tableAliases)
+		return replaceIndexedAccessInUnaryNode(ctx, node.UnaryNode, node, a, schema, scope, joinIndexes, tableAliases)
 	case *plan.GroupBy:
-		return replaceIndexedAccessInUnaryNode(node.UnaryNode, node, schema, scope, joinIndexes, tableAliases)
+		return replaceIndexedAccessInUnaryNode(ctx, node.UnaryNode, node, a, schema, scope, joinIndexes, tableAliases)
 	case *plan.Window:
-		return replaceIndexedAccessInUnaryNode(node.UnaryNode, node, schema, scope, joinIndexes, tableAliases)
+		return replaceIndexedAccessInUnaryNode(ctx, node.UnaryNode, node, a, schema, scope, joinIndexes, tableAliases)
 	case *plan.Distinct:
-		return replaceIndexedAccessInUnaryNode(node.UnaryNode, node, schema, scope, joinIndexes, tableAliases)
+		return replaceIndexedAccessInUnaryNode(ctx, node.UnaryNode, node, a, schema, scope, joinIndexes, tableAliases)
 	case *plan.CrossJoin:
 		// TODO: be more principled about integrating cross joins into the overall join plan, no reason to keep them separate
-		newRight, replaced, err := replaceTableAccessWithIndexedAccess(node.Right(), append(schema, node.Left().Schema()...), scope, joinIndexes, tableAliases)
+		newRight, replaced, err := replaceTableAccessWithIndexedAccess(ctx, node.Right(), a, append(schema, node.Left().Schema()...), scope, joinIndexes, tableAliases)
 		if err != nil {
 			return nil, false, err
 		}
@@ -210,14 +232,16 @@ func replaceTableAccessWithIndexedAccess(
 // replaceIndexedAccessInUnaryNode is a helper function to replaceTableAccessWithIndexedAccess for Unary nodes to avoid
 // boilerplate.
 func replaceIndexedAccessInUnaryNode(
+	ctx *sql.Context,
 	un plan.UnaryNode,
 	node sql.Node,
+	a *Analyzer,
 	schema sql.Schema,
 	scope *Scope,
 	joinIndexes joinIndexesByTable,
 	tableAliases TableAliases,
 ) (sql.Node, bool, error) {
-	newChild, replaced, err := replaceTableAccessWithIndexedAccess(un.Child, schema, scope, joinIndexes, tableAliases)
+	newChild, replaced, err := replaceTableAccessWithIndexedAccess(ctx, un.Child, a, schema, scope, joinIndexes, tableAliases)
 	if err != nil {
 		return nil, false, err
 	}
@@ -228,7 +252,7 @@ func replaceIndexedAccessInUnaryNode(
 
 	// For nodes that were above the join node, the field indexes might be wrong in the case that tables got reordered
 	// by join planning. So fix them.
-	newNode, err = FixFieldIndexesForExpressions(newNode, scope)
+	newNode, err = FixFieldIndexesForExpressions(ctx, a, newNode, scope)
 	if err != nil {
 		return nil, false, err
 	}
@@ -358,7 +382,11 @@ func (j JoinOrder) HintType() string {
 // joinTreeToNodes transforms the simplified join tree given into a real tree of IndexedJoin nodes.
 func joinTreeToNodes(tree *joinSearchNode, tablesByName map[string]NameableNode, scope *Scope) sql.Node {
 	if tree.isLeaf() {
-		return tablesByName[tree.table]
+		nn, ok := tablesByName[strings.ToLower(tree.table)]
+		if !ok {
+			panic(fmt.Sprintf("Could not find NameableNode for '%s'", tree.table))
+		}
+		return nn
 	}
 
 	left := joinTreeToNodes(tree.left, tablesByName, scope)
@@ -368,13 +396,13 @@ func joinTreeToNodes(tree *joinSearchNode, tablesByName map[string]NameableNode,
 
 // createIndexLookupKeyExpression returns a slice of expressions to be used when evaluating the context row given to the
 // RowIter method of an IndexedTableAccess node. Column expressions must match the declared column order of the index.
-func createIndexLookupKeyExpression(ji *joinIndex, tableAliases TableAliases) []sql.Expression {
+func createIndexLookupKeyExpression(ctx *sql.Context, ji *joinIndex, tableAliases TableAliases) []sql.Expression {
 
 	keyExprs := make([]sql.Expression, len(ji.index.Expressions()))
 IndexExpressions:
 	for i, idxExpr := range ji.index.Expressions() {
 		for j, col := range ji.cols {
-			if idxExpr == normalizeExpression(tableAliases, col).String() {
+			if idxExpr == normalizeExpression(ctx, tableAliases, col).String() {
 				keyExprs[i] = ji.comparandExprs[j]
 				continue IndexExpressions
 			}
@@ -394,6 +422,12 @@ type joinIndex struct {
 	table string
 	// The index that can be used in this join, if any. nil otherwise
 	index sql.Index
+	// This field stores exactly two joinIndexes, representing the two
+	// branches of an OR expression when the top-level condition is an OR
+	// expression that could potentially make use of different indexes. If
+	// disjunction[0] != nil, disjunction[1] will also be nonnil and index
+	// will be nil.
+	disjunction [2]*joinIndex
 	// The join condition
 	joinCond sql.Expression
 	// The join type
@@ -410,13 +444,23 @@ type joinIndex struct {
 	comparandExprs []sql.Expression
 }
 
+func (ji *joinIndex) hasIndex() bool {
+	if ji.index != nil {
+		return true
+	}
+	if ji.disjunction[0] != nil {
+		return ji.disjunction[0].hasIndex() && ji.disjunction[1].hasIndex()
+	}
+	return false
+}
+
 type joinIndexes []*joinIndex
 type joinIndexesByTable map[string]joinIndexes
 
 // getUsableIndex returns an index that can be satisfied by the schema given, or nil if no such index exists.
 func (j joinIndexes) getUsableIndex(schema sql.Schema) *joinIndex {
 	for _, joinIndex := range j {
-		if joinIndex.index == nil {
+		if !joinIndex.hasIndex() {
 			continue
 		}
 		// If every comparand for this join index is present in the schema given, we can use the corresponding index
@@ -569,14 +613,14 @@ func getJoinIndexes(
 	ctx *sql.Context,
 	a *Analyzer,
 	ia *indexAnalyzer,
-	joinCond joinCond,
+	jc joinCond,
 	tableAliases TableAliases,
 ) joinIndexesByTable {
 
-	switch joinCond.cond.(type) {
+	switch cond := jc.cond.(type) {
 	case *expression.Equals, *expression.NullSafeEquals:
 		result := make(joinIndexesByTable)
-		left, right := getEqualityIndexes(ctx, a, ia, joinCond, tableAliases)
+		left, right := getEqualityIndexes(ctx, a, ia, jc, tableAliases)
 
 		// If we can't identify a join index for this condition, return nothing.
 		if left == nil || right == nil {
@@ -587,16 +631,61 @@ func getJoinIndexes(
 		result[right.table] = append(result[right.table], right)
 		return result
 	case *expression.And:
-		exprs := splitConjunction(joinCond.cond)
+		exprs := splitConjunction(jc.cond)
 		for _, expr := range exprs {
-			switch expr.(type) {
-			case *expression.Equals, *expression.NullSafeEquals:
+			switch e := expr.(type) {
+			case *expression.Equals, *expression.NullSafeEquals, *expression.IsNull:
+			case *expression.Not:
+				if _, ok := e.Child.(*expression.IsNull); !ok {
+					return nil
+				}
 			default:
 				return nil
 			}
 		}
 
-		return getJoinIndex(ctx, joinCond, exprs, ia, tableAliases)
+		return getJoinIndex(ctx, jc, exprs, ia, tableAliases)
+	case *expression.Or:
+		leftCond := joinCond{cond.Left, jc.joinType, jc.rightHandTable}
+		rightCond := joinCond{cond.Right, jc.joinType, jc.rightHandTable}
+		leftIdxByTbl := getJoinIndexes(ctx, a, ia, leftCond, tableAliases)
+		rightIdxByTbl := getJoinIndexes(ctx, a, ia, rightCond, tableAliases)
+		result := make(joinIndexesByTable)
+		for table, lefts := range leftIdxByTbl {
+			if rights, ok := rightIdxByTbl[table]; ok {
+				var v joinIndexes
+				for _, left := range lefts {
+					for _, right := range rights {
+						cols := make([]*expression.GetField, 0, len(left.cols)+len(right.cols))
+						cols = append(cols, left.cols...)
+						cols = append(cols, right.cols...)
+						colExprs := make([]sql.Expression, 0, len(left.colExprs)+len(right.colExprs))
+						colExprs = append(colExprs, left.colExprs...)
+						colExprs = append(colExprs, right.colExprs...)
+						comparandCols := make([]*expression.GetField, 0, len(left.comparandCols)+len(right.comparandCols))
+						comparandCols = append(comparandCols, left.comparandCols...)
+						comparandCols = append(comparandCols, right.comparandCols...)
+						comparandExprs := make([]sql.Expression, 0, len(left.comparandExprs)+len(right.comparandExprs))
+						comparandExprs = append(comparandExprs, left.comparandExprs...)
+						comparandExprs = append(comparandExprs, right.comparandExprs...)
+						v = append(v, &joinIndex{
+							table:          table,
+							index:          nil,
+							disjunction:    [2]*joinIndex{left, right},
+							joinCond:       jc.cond,
+							joinType:       jc.joinType,
+							joinPosition:   left.joinPosition,
+							cols:           cols,
+							colExprs:       colExprs,
+							comparandCols:  comparandCols,
+							comparandExprs: comparandExprs,
+						})
+					}
+				}
+				result[table] = v
+			}
+		}
+		return result
 	}
 	// TODO: handle additional kinds of expressions other than equality
 
@@ -632,8 +721,8 @@ func getEqualityIndexes(
 	}
 
 	leftIdx, rightIdx :=
-		ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, cond.Left())...),
-		ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, cond.Right())...)
+		ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, cond.Left())...),
+		ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, cond.Right())...)
 
 	// Figure out which table is on the left and right in the join
 	leftJoinPosition := plan.JoinTypeLeft
@@ -684,13 +773,13 @@ func getJoinIndex(
 	indexesByTable := make(joinIndexesByTable)
 	for table, cols := range exprsByTable {
 		exprs := extractExpressions(cols)
-		idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, exprs...)...)
+		idx := ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, exprs...)...)
 		// If we do not find a perfect index, we take the first single column partial index if there is one.
 		// This currently only finds single column indexes. A better search would look for the most complete
 		// index available, covering the columns with the most specificity / highest cardinality.
 		if idx == nil && len(exprs) > 1 {
 			for _, e := range exprs {
-				idx = ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(tableAliases, e)...)
+				idx = ia.IndexByExpression(ctx, ctx.GetCurrentDatabase(), normalizeExpressions(ctx, tableAliases, e)...)
 				if idx != nil {
 					break
 				}

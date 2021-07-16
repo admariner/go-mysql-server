@@ -146,13 +146,13 @@ func TestPushdownFilterToTables(t *testing.T) {
 					expression.NewGetFieldWithTable(5, sql.Text, "mytable2", "t2", false),
 				},
 				plan.NewCrossJoin(
-					plan.NewDecoratedNode("Filtered table access on [mytable.f = 3.14]", plan.NewResolvedTable(table.WithFilters([]sql.Expression{
+					plan.NewDecoratedNode("Filtered table access on [(mytable.f = 3.14)]", plan.NewResolvedTable(table.WithFilters(sql.NewEmptyContext(), []sql.Expression{
 						expression.NewEquals(
 							expression.NewGetFieldWithTable(1, sql.Float64, "mytable", "f", false),
 							expression.NewLiteral(3.14, sql.Float64),
 						),
 					}), nil, nil)),
-					plan.NewDecoratedNode("Filtered table access on [mytable2.i2 IS NULL]", plan.NewResolvedTable(table2.WithFilters([]sql.Expression{
+					plan.NewDecoratedNode("Filtered table access on [mytable2.i2 IS NULL]", plan.NewResolvedTable(table2.WithFilters(sql.NewEmptyContext(), []sql.Expression{
 						expression.NewIsNull(
 							expression.NewGetFieldWithTable(0, sql.Int32, "mytable2", "i2", false),
 						),
@@ -192,15 +192,15 @@ func TestPushdownFilterToTables(t *testing.T) {
 				},
 				plan.NewCrossJoin(
 					plan.NewDecoratedNode("Projected table access on [f]",
-						plan.NewDecoratedNode("Filtered table access on [mytable.f = 3.14]",
-							plan.NewResolvedTable(table.WithProjection([]string{"f"}).(*memory.FilteredTable).WithFilters([]sql.Expression{
+						plan.NewDecoratedNode("Filtered table access on [(mytable.f = 3.14)]",
+							plan.NewResolvedTable(table.WithProjection([]string{"f"}).(*memory.FilteredTable).WithFilters(sql.NewEmptyContext(), []sql.Expression{
 								eq(expression.NewGetFieldWithTable(1, sql.Float64, "mytable", "f", false), expression.NewLiteral(3.14, sql.Float64)),
 							}), nil, nil),
 						),
 					),
 					plan.NewDecoratedNode("Projected table access on [t2 i2]",
 						plan.NewDecoratedNode("Filtered table access on [mytable2.i2 IS NULL]",
-							plan.NewResolvedTable(table2.WithProjection([]string{"t2", "i2"}).(*memory.FilteredTable).WithFilters([]sql.Expression{
+							plan.NewResolvedTable(table2.WithProjection([]string{"t2", "i2"}).(*memory.FilteredTable).WithFilters(sql.NewEmptyContext(), []sql.Expression{
 								expression.NewIsNull(expression.NewGetFieldWithTable(0, sql.Int32, "mytable2", "i2", false)),
 							}), nil, nil),
 						),
@@ -448,8 +448,7 @@ func TestPushdownFiltersAboveTables(t *testing.T) {
 			),
 		},
 		{
-			// TODO: we could push down only the non-join predicates, but we currently just pass entirely
-			name: "filter contains join condition (no pushdown currently possible, but see TODO)",
+			name: "filter contains join condition",
 			node: plan.NewProject(
 				[]sql.Expression{
 					expression.NewGetFieldWithTable(0, sql.Int32, "mytable", "i", true),
@@ -474,6 +473,33 @@ func TestPushdownFiltersAboveTables(t *testing.T) {
 					plan.NewCrossJoin(
 						plan.NewResolvedTable(table, nil, nil),
 						plan.NewResolvedTable(table2, nil, nil),
+					),
+				),
+			),
+			expected: plan.NewProject(
+				[]sql.Expression{
+					expression.NewGetFieldWithTable(0, sql.Int32, "mytable", "i", true),
+				},
+				plan.NewFilter(
+					expression.NewEquals(
+						expression.NewGetFieldWithTable(0, sql.Int32, "mytable", "i", true),
+						expression.NewGetFieldWithTable(3, sql.Int32, "mytable2", "i2", true),
+					),
+					plan.NewCrossJoin(
+						plan.NewFilter(
+							expression.NewEquals(
+								expression.NewGetFieldWithTable(1, sql.Float64, "mytable", "f", true),
+								expression.NewLiteral(3.14, sql.Float64),
+							),
+							plan.NewResolvedTable(table, nil, nil),
+						),
+						plan.NewFilter(
+							expression.NewEquals(
+								expression.NewGetFieldWithTable(0, sql.Int32, "mytable2", "i2", true),
+								expression.NewLiteral(20, sql.Int32),
+							),
+							plan.NewResolvedTable(table2, nil, nil),
+						),
 					),
 				),
 			),
@@ -665,19 +691,19 @@ func TestPushdownIndex(t *testing.T) {
 				},
 				plan.NewFilter(
 					and(
+						expression.NewEquals(
+							expression.NewGetFieldWithTable(1, sql.Float64, "mytable", "f", true),
+							expression.NewLiteral(3.14, sql.Float64),
+						),
 						and(
-							expression.NewEquals(
-								expression.NewGetFieldWithTable(1, sql.Float64, "mytable", "f", true),
-								expression.NewLiteral(3.14, sql.Float64),
-							),
 							expression.NewEquals(
 								expression.NewGetFieldWithTable(2, sql.Text, "mytable", "t", true),
 								expression.NewLiteral("hello", sql.Text),
 							),
-						),
-						expression.NewEquals(
-							expression.NewGetFieldWithTable(2, sql.Text, "mytable", "t", true),
-							expression.NewLiteral("goodbye", sql.Text),
+							expression.NewEquals(
+								expression.NewGetFieldWithTable(2, sql.Text, "mytable", "t", true),
+								expression.NewLiteral("goodbye", sql.Text),
+							),
 						),
 					),
 					plan.NewStaticIndexedTableAccess(
@@ -931,7 +957,7 @@ func TestPushdownIndex(t *testing.T) {
 							plan.NewResolvedTable(table, nil, nil),
 							mustIndexLookup(idxTable1F.Get(3.14)),
 							idxTable1F,
-							[]sql.Expression{gfCol(1, myTableF)},
+							[]sql.Expression{gfColAlias(1, myTableF, "t1")},
 						),
 					),
 				),
@@ -979,7 +1005,7 @@ func TestPushdownIndex(t *testing.T) {
 							plan.NewResolvedTable(table, nil, nil),
 							mustIndexLookup(idxTable1F.Get(3.14)),
 							idxTable1F,
-							[]sql.Expression{gfCol(1, myTableF)},
+							[]sql.Expression{gfColAlias(1, myTableF, "t1")},
 						),
 					),
 				),
@@ -1027,7 +1053,7 @@ func TestPushdownIndex(t *testing.T) {
 								plan.NewResolvedTable(table, nil, nil),
 								mustIndexLookup(idxTable1F.Get(3.14)),
 								idxTable1F,
-								[]sql.Expression{gfCol(1, myTableF)},
+								[]sql.Expression{gfColAlias(1, myTableF, "t1")},
 							),
 						),
 					),
@@ -1041,7 +1067,7 @@ func TestPushdownIndex(t *testing.T) {
 								plan.NewResolvedTable(table2, nil, nil),
 								mustIndexLookup(idxTable2I2.Get(21)),
 								idxTable2I2,
-								[]sql.Expression{gfCol(0, mytable2I)},
+								[]sql.Expression{gfColAlias(0, mytable2I, "t2")},
 							),
 						),
 					),
@@ -1108,7 +1134,7 @@ func TestPushdownIndex(t *testing.T) {
 								plan.NewResolvedTable(table, nil, nil),
 								mustIndexLookup(idxTable1F.Get(3.14)),
 								idxTable1F,
-								[]sql.Expression{gfCol(1, myTableF)},
+								[]sql.Expression{gfColAlias(1, myTableF, "t1")},
 							),
 						),
 					),
@@ -1128,7 +1154,7 @@ func TestPushdownIndex(t *testing.T) {
 								plan.NewResolvedTable(table2, nil, nil),
 								mustIndexLookup(idxTable2I2.Get(21)),
 								idxTable2I2,
-								[]sql.Expression{gfCol(0, mytable2I)},
+								[]sql.Expression{gfColAlias(0, mytable2I, "t2")},
 							),
 						),
 					),
@@ -1186,7 +1212,7 @@ func TestPushdownIndex(t *testing.T) {
 								plan.NewResolvedTable(table, nil, nil),
 								mustIndexLookup(idxtable1I.Get(100)),
 								idxtable1I,
-								[]sql.Expression{gfCol(0, myTableI)},
+								[]sql.Expression{gfColAlias(0, myTableI, "t1")},
 							),
 						),
 					),
@@ -1242,7 +1268,7 @@ func TestPushdownIndex(t *testing.T) {
 							plan.NewIndexedTableAccess(
 								plan.NewResolvedTable(table2, nil, nil),
 								idxTable2I2,
-								[]sql.Expression{gf(0, "mytable", "i")},
+								[]sql.Expression{gf(0, "t1", "i")},
 							),
 						),
 						plan.JoinTypeInner,
@@ -1266,7 +1292,7 @@ func TestPushdownIndex(t *testing.T) {
 								plan.NewResolvedTable(table, nil, nil),
 								mustIndexLookup(idxtable1I.Get(100)),
 								idxtable1I,
-								[]sql.Expression{gfCol(0, myTableI)},
+								[]sql.Expression{gfColAlias(0, myTableI, "t1")},
 							),
 						),
 					),
@@ -1285,7 +1311,7 @@ func TestPushdownIndex(t *testing.T) {
 							plan.NewIndexedTableAccess(
 								plan.NewResolvedTable(table2, nil, nil),
 								idxTable2I2,
-								[]sql.Expression{gf(0, "mytable", "i")},
+								[]sql.Expression{gf(0, "t1", "i")},
 							),
 						),
 					),
@@ -1357,7 +1383,7 @@ func TestPushdownIndex(t *testing.T) {
 									plan.NewResolvedTable(table, nil, nil),
 									mustIndexLookup(idxtable1I.Get(100)),
 									idxtable1I,
-									[]sql.Expression{gfCol(0, myTableI)},
+									[]sql.Expression{gfColAlias(0, myTableI, "t1")},
 								),
 							),
 						),
@@ -1433,7 +1459,7 @@ func TestPushdownIndex(t *testing.T) {
 									plan.NewResolvedTable(table2, nil, nil),
 									mustIndexLookup(idxTable2I2.Get(21)),
 									idxTable2I2,
-									[]sql.Expression{gfCol(0, mytable2I)},
+									[]sql.Expression{gfColAlias(0, mytable2I, "t2")},
 								),
 							),
 						),

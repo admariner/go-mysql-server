@@ -17,6 +17,8 @@ package enginetest
 import (
 	"gopkg.in/src-d/go-errors.v1"
 
+	"github.com/dolthub/go-mysql-server/sql/analyzer"
+
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/plan"
 )
@@ -49,9 +51,70 @@ type ScriptTestAssertion struct {
 	ExpectedWarning int
 }
 
+// ScriptTests are a set of test scripts to run.
 // Unlike other engine tests, ScriptTests must be self-contained. No other tables are created outside the definition of
 // the tests.
 var ScriptTests = []ScriptTest{
+	{
+		Name: "failed statements data validation for INSERT, UPDATE",
+		SetUpScript: []string{
+			"CREATE TABLE test (pk BIGINT PRIMARY KEY, v1 BIGINT, INDEX (v1));",
+			"INSERT INTO test VALUES (1,1), (4,4), (5,5);",
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query:          "INSERT INTO test VALUES (2,2), (3,3), (1,1);",
+				ExpectedErrStr: "duplicate primary key given: [1]",
+			},
+			{
+				Query:    "SELECT * FROM test;",
+				Expected: []sql.Row{{1, 1}, {4, 4}, {5, 5}},
+			},
+			{
+				Query:          "UPDATE test SET pk = pk + 1;",
+				ExpectedErrStr: "duplicate primary key given: [5]",
+			},
+			{
+				Query:    "SELECT * FROM test;",
+				Expected: []sql.Row{{1, 1}, {4, 4}, {5, 5}},
+			},
+		},
+	},
+	{
+		Name: "failed statements data validation for DELETE, REPLACE",
+		SetUpScript: []string{
+			"CREATE TABLE test (pk BIGINT PRIMARY KEY, v1 BIGINT, INDEX (v1));",
+			"INSERT INTO test VALUES (1,1), (4,4), (5,5);",
+			"CREATE TABLE test2 (pk BIGINT PRIMARY KEY, CONSTRAINT fk_test FOREIGN KEY (pk) REFERENCES test (v1));",
+			"INSERT INTO test2 VALUES (4);",
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query:       "DELETE FROM test WHERE pk > 0;",
+				ExpectedErr: sql.ErrForeignKeyChildViolation,
+			},
+			{
+				Query:    "SELECT * FROM test;",
+				Expected: []sql.Row{{1, 1}, {4, 4}, {5, 5}},
+			},
+			{
+				Query:    "SELECT * FROM test2;",
+				Expected: []sql.Row{{4}},
+			},
+			{
+				Query:       "REPLACE INTO test VALUES (1,7), (4,8), (5,9);",
+				ExpectedErr: sql.ErrForeignKeyChildViolation,
+			},
+			{
+				Query:    "SELECT * FROM test;",
+				Expected: []sql.Row{{1, 1}, {4, 4}, {5, 5}},
+			},
+			{
+				Query:    "SELECT * FROM test2;",
+				Expected: []sql.Row{{4}},
+			},
+		},
+	},
 	{
 		Name: "delete with in clause",
 		SetUpScript: []string{
@@ -317,10 +380,10 @@ var ScriptTests = []ScriptTest{
 		},
 		Assertions: []ScriptTestAssertion{
 			{
-				Query: `select xa from a 
-									join b on ya - 1 = xb 
-									join c on xc = za - 2 
-									join d on xd = yb - 1 
+				Query: `select xa from a
+									join b on ya - 1 = xb
+									join c on xc = za - 2
+									join d on xd = yb - 1
 									join e on xe = zb - 2 and ye = yc`,
 				Expected: []sql.Row{{1}},
 			},
@@ -606,6 +669,22 @@ var ScriptTests = []ScriptTest{
 				Query:    "select found_rows()",
 				Expected: []sql.Row{{2}},
 			},
+			{
+				Query:    "update b set x = x where x < 40",
+				Expected: []sql.Row{{sql.OkResult{RowsAffected: 0, InsertID: 0, Info: plan.UpdateInfo{Matched: 8}}}},
+			},
+			{
+				Query:    "select found_rows()",
+				Expected: []sql.Row{{8}},
+			},
+			{
+				Query:    "update b set x = x where x > 10",
+				Expected: []sql.Row{{sql.OkResult{RowsAffected: 0, InsertID: 0, Info: plan.UpdateInfo{Matched: 3}}}},
+			},
+			{
+				Query:    "select found_rows()",
+				Expected: []sql.Row{{3}},
+			},
 		},
 	},
 	{
@@ -621,6 +700,80 @@ var ScriptTests = []ScriptTest{
 			{1, 1},
 			{2, 2},
 			{3, 3},
+		},
+	},
+	{
+		Name: "Indexed Join On Keyless Table",
+		SetUpScript: []string{
+			"create table l (pk int primary key, c0 int, c1 int);",
+			"create table r (c0 int, c1 int, third int);",
+			"create index r_c0 on r (c0);",
+			"create index r_c1 on r (c1);",
+			"create index r_third on r (third);",
+			"insert into l values (0, 0, 0), (1, 0, 1), (2, 1, 0), (3, 0, 2), (4, 2, 0), (5, 1, 2), (6, 2, 1), (7, 2, 2);",
+			"insert into l values (256, 1024, 4096);",
+			"insert into r values (1, 1, -1), (2, 2, -1), (2, 2, -1);",
+			"insert into r values (-1, -1, 256);",
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query: "select pk, l.c0, l.c1 from l join r on l.c0 = r.c0 or l.c1 = r.c1 order by 1, 2, 3;",
+				Expected: []sql.Row{
+					{1, 0, 1},
+					{2, 1, 0},
+					{3, 0, 2},
+					{3, 0, 2},
+					{4, 2, 0},
+					{4, 2, 0},
+					{5, 1, 2},
+					{5, 1, 2},
+					{5, 1, 2},
+					{6, 2, 1},
+					{6, 2, 1},
+					{6, 2, 1},
+					{7, 2, 2},
+					{7, 2, 2},
+				},
+			},
+			{
+				Query: "select pk, l.c0, l.c1 from l join r on l.c0 = r.c0 or l.c1 = r.c1 or l.pk = r.third order by 1, 2, 3;",
+				Expected: []sql.Row{
+					{1, 0, 1},
+					{2, 1, 0},
+					{3, 0, 2},
+					{3, 0, 2},
+					{4, 2, 0},
+					{4, 2, 0},
+					{5, 1, 2},
+					{5, 1, 2},
+					{5, 1, 2},
+					{6, 2, 1},
+					{6, 2, 1},
+					{6, 2, 1},
+					{7, 2, 2},
+					{7, 2, 2},
+					{256, 1024, 4096},
+				},
+			},
+			{
+				Query: "select pk, l.c0, l.c1 from l join r on l.c0 = r.c0 or l.c1 < 4 and l.c1 = r.c1 or l.c1 >= 4 and l.c1 = r.c1 order by 1, 2, 3;",
+				Expected: []sql.Row{
+					{1, 0, 1},
+					{2, 1, 0},
+					{3, 0, 2},
+					{3, 0, 2},
+					{4, 2, 0},
+					{4, 2, 0},
+					{5, 1, 2},
+					{5, 1, 2},
+					{5, 1, 2},
+					{6, 2, 1},
+					{6, 2, 1},
+					{6, 2, 1},
+					{7, 2, 2},
+					{7, 2, 2},
+				},
+			},
 		},
 	},
 	{
@@ -752,6 +905,377 @@ var ScriptTests = []ScriptTest{
 			{ // Just confirms that the last INSERT didn't do anything
 				Query:    "SELECT * FROM test;",
 				Expected: []sql.Row{{1, 88}, {2, 42}},
+			},
+		},
+	},
+	{
+		Name: "Run through some complex queries with DISTINCT and aggregates",
+		SetUpScript: []string{
+			"CREATE TABLE tab1(col0 INTEGER, col1 INTEGER, col2 INTEGER)",
+			"CREATE TABLE tab2(col0 INTEGER, col1 INTEGER, col2 INTEGER)",
+			"INSERT INTO tab1 VALUES(51,14,96)",
+			"INSERT INTO tab1 VALUES(85,5,59)",
+			"INSERT INTO tab1 VALUES(91,47,68)",
+			"INSERT INTO tab2 VALUES(64,77,40)",
+			"INSERT INTO tab2 VALUES(75,67,58)",
+			"INSERT INTO tab2 VALUES(46,51,23)",
+			"CREATE TABLE mytable (pk int, v1 int)",
+			"INSERT INTO mytable VALUES(1,1)",
+			"INSERT INTO mytable VALUES(1,1)",
+			"INSERT INTO mytable VALUES(1,2)",
+			"INSERT INTO mytable VALUES(2,2)",
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query:    "SELECT - SUM( DISTINCT - - 71 ) AS col2 FROM tab2 cor0",
+				Expected: []sql.Row{{float64(-71)}},
+			},
+			{
+				Query:    "SELECT - SUM ( DISTINCT - - 71 ) AS col2 FROM tab2 cor0",
+				Expected: []sql.Row{{float64(-71)}},
+			},
+			{
+				Query:    "SELECT + MAX( DISTINCT ( - col0 ) ) FROM tab1 AS cor0",
+				Expected: []sql.Row{{-51}},
+			},
+			{
+				Query:    "SELECT SUM( DISTINCT + col1 ) * - 22 - - ( - COUNT( * ) ) col0 FROM tab1 AS cor0",
+				Expected: []sql.Row{{float64(-1455)}},
+			},
+			{
+				Query:    "SELECT MIN (DISTINCT col1) from tab1 GROUP BY col0 ORDER BY col0",
+				Expected: []sql.Row{{14}, {5}, {47}},
+			},
+			{
+				Query:    "SELECT SUM (DISTINCT col1) from tab1 GROUP BY col0 ORDER BY col0",
+				Expected: []sql.Row{{float64(14)}, {float64(5)}, {float64(47)}},
+			},
+			{
+				Query:    "SELECT pk, SUM(DISTINCT v1), MAX(v1) FROM mytable GROUP BY pk",
+				Expected: []sql.Row{{int64(1), float64(3), int64(2)}, {int64(2), float64(2), int64(2)}},
+			},
+			{
+				Query:    "SELECT pk, MIN(DISTINCT v1), MAX(DISTINCT v1) FROM mytable GROUP BY pk",
+				Expected: []sql.Row{{int64(1), int64(1), int64(2)}, {int64(2), int64(2), int64(2)}},
+			},
+			{
+				Query:    "SELECT SUM(DISTINCT pk * v1) from mytable",
+				Expected: []sql.Row{{float64(7)}},
+			},
+			{
+				Query:    "SELECT SUM(DISTINCT POWER(v1, 2)) FROM mytable",
+				Expected: []sql.Row{{float64(5)}},
+			},
+			{
+				Query:    "SELECT + + 97 FROM tab1 GROUP BY tab1.col1",
+				Expected: []sql.Row{{97}, {97}, {97}},
+			},
+			{
+				Query:    "SELECT rand(10) FROM tab1 GROUP BY tab1.col1",
+				Expected: []sql.Row{{0.5660920659323543}, {0.5660920659323543}, {0.5660920659323543}},
+			},
+			{
+				Query:    "SELECT ALL - cor0.col0 * + cor0.col0 AS col2 FROM tab1 AS cor0 GROUP BY cor0.col0",
+				Expected: []sql.Row{{-2601}, {-7225}, {-8281}},
+			},
+			{
+				Query:    "SELECT cor0.col0 * cor0.col0 + cor0.col0 AS col2 FROM tab1 AS cor0 GROUP BY cor0.col0 order by 1",
+				Expected: []sql.Row{{2652}, {7310}, {8372}},
+			},
+			{
+				Query:    "SELECT - floor(cor0.col0) * ceil(cor0.col0) AS col2 FROM tab1 AS cor0 GROUP BY cor0.col0",
+				Expected: []sql.Row{{-2601}, {-7225}, {-8281}},
+			},
+			{
+				Query:    "SELECT col0 FROM tab1 AS cor0 GROUP BY cor0.col0",
+				Expected: []sql.Row{{51}, {85}, {91}},
+			},
+			{
+				Query:    "SELECT - cor0.col0 FROM tab1 AS cor0 GROUP BY cor0.col0",
+				Expected: []sql.Row{{-51}, {-85}, {-91}},
+			},
+			{
+				Query:    "SELECT col0 BETWEEN 2 and 4 from tab1 group by col0",
+				Expected: []sql.Row{{false}, {false}, {false}},
+			},
+			{
+				Query:       "SELECT col0, col1 FROM tab1 GROUP by col0;",
+				ExpectedErr: analyzer.ErrValidationGroupBy,
+			},
+			{
+				Query:       "SELECT col0, floor(col1) FROM tab1 GROUP by col0;",
+				ExpectedErr: analyzer.ErrValidationGroupBy,
+			},
+			{
+				Query:       "SELECT floor(cor0.col1) * ceil(cor0.col0) AS col2 FROM tab1 AS cor0 GROUP BY cor0.col0",
+				ExpectedErr: analyzer.ErrValidationGroupBy,
+			},
+		},
+	},
+	{
+		Name: "Nested Subquery projections (NTC)",
+		SetUpScript: []string{
+			`CREATE TABLE dcim_site (id char(32) NOT NULL,created date,last_updated datetime,_custom_field_data json NOT NULL,name varchar(100) NOT NULL,_name varchar(100) NOT NULL,slug varchar(100) NOT NULL,facility varchar(50) NOT NULL,asn bigint,time_zone varchar(63) NOT NULL,description varchar(200) NOT NULL,physical_address varchar(200) NOT NULL,shipping_address varchar(200) NOT NULL,latitude decimal(8,6),longitude decimal(9,6),contact_name varchar(50) NOT NULL,contact_phone varchar(20) NOT NULL,contact_email varchar(254) NOT NULL,comments longtext NOT NULL,region_id char(32),status_id char(32),tenant_id char(32),PRIMARY KEY (id),KEY dcim_site_region_id_45210932 (region_id),KEY dcim_site_status_id_e6a50f56 (status_id),KEY dcim_site_tenant_id_15e7df63 (tenant_id),UNIQUE KEY name (name),UNIQUE KEY slug (slug)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+			`CREATE TABLE dcim_rackgroup (id char(32) NOT NULL,created date,last_updated datetime,_custom_field_data json NOT NULL,name varchar(100) NOT NULL,slug varchar(100) NOT NULL,description varchar(200) NOT NULL,lft int unsigned NOT NULL,rght int unsigned NOT NULL,tree_id int unsigned NOT NULL,level int unsigned NOT NULL,parent_id char(32),site_id char(32) NOT NULL,PRIMARY KEY (id),KEY dcim_rackgroup_parent_id_cc315105 (parent_id),KEY dcim_rackgroup_site_id_13520e89 (site_id),KEY dcim_rackgroup_slug_3f4582a7 (slug),KEY dcim_rackgroup_tree_id_9c2ad6f4 (tree_id),UNIQUE KEY site_idname (site_id,name),UNIQUE KEY site_idslug (site_id,slug),CONSTRAINT dcim_rackgroup_parent_id_cc315105_fk_dcim_rackgroup_id FOREIGN KEY (parent_id) REFERENCES dcim_rackgroup (id),CONSTRAINT dcim_rackgroup_site_id_13520e89_fk_dcim_site_id FOREIGN KEY (site_id) REFERENCES dcim_site (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+			`CREATE TABLE dcim_rack (id char(32) NOT NULL,created date,last_updated datetime,_custom_field_data json NOT NULL,name varchar(100) NOT NULL,_name varchar(100) NOT NULL,facility_id varchar(50),serial varchar(50) NOT NULL,asset_tag varchar(50),type varchar(50) NOT NULL,width smallint unsigned NOT NULL,u_height smallint unsigned NOT NULL,desc_units tinyint NOT NULL,outer_width smallint unsigned,outer_depth smallint unsigned,outer_unit varchar(50) NOT NULL,comments longtext NOT NULL,group_id char(32),role_id char(32),site_id char(32) NOT NULL,status_id char(32),tenant_id char(32),PRIMARY KEY (id),UNIQUE KEY asset_tag (asset_tag),KEY dcim_rack_group_id_44e90ea9 (group_id),KEY dcim_rack_role_id_62d6919e (role_id),KEY dcim_rack_site_id_403c7b3a (site_id),KEY dcim_rack_status_id_ee3dee3e (status_id),KEY dcim_rack_tenant_id_7cdf3725 (tenant_id),UNIQUE KEY group_idfacility_id (group_id,facility_id),UNIQUE KEY group_idname (group_id,name),CONSTRAINT dcim_rack_group_id_44e90ea9_fk_dcim_rackgroup_id FOREIGN KEY (group_id) REFERENCES dcim_rackgroup (id),CONSTRAINT dcim_rack_site_id_403c7b3a_fk_dcim_site_id FOREIGN KEY (site_id) REFERENCES dcim_site (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+			`INSERT INTO dcim_site (id, created, last_updated, _custom_field_data, status_id, name, _name, slug, region_id, tenant_id, facility, asn, time_zone, description, physical_address, shipping_address, latitude, longitude, contact_name, contact_phone, contact_email, comments) VALUES ('f0471f313b694d388c8ec39d9590e396', '2021-05-20', '2021-05-20 18:51:46.416695', '{}', NULL, 'Site 1', 'Site 00000001', 'site-1', NULL, NULL, '', NULL, '', '', '', '', NULL, NULL, '', '', '', '')`,
+			`INSERT INTO dcim_site (id, created, last_updated, _custom_field_data, status_id, name, _name, slug, region_id, tenant_id, facility, asn, time_zone, description, physical_address, shipping_address, latitude, longitude, contact_name, contact_phone, contact_email, comments) VALUES ('442bab8b517149ab87207e8fb5ba1569', '2021-05-20', '2021-05-20 18:51:47.333720', '{}', NULL, 'Site 2', 'Site 00000002', 'site-2', NULL, NULL, '', NULL, '', '', '', '', NULL, NULL, '', '', '', '')`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('5c107f979f434bf7a7820622f18a5211', '2021-05-20', '2021-05-20 18:51:48.150116', '{}', 'Parent Rack Group 1', 'parent-rack-group-1', 'f0471f313b694d388c8ec39d9590e396', NULL, '', 1, 2, 1, 0)`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('6707c20336a2406da6a9d394477f7e8c', '2021-05-20', '2021-05-20 18:51:48.969713', '{}', 'Parent Rack Group 2', 'parent-rack-group-2', '442bab8b517149ab87207e8fb5ba1569', NULL, '', 1, 2, 2, 0)`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('6bc0d9b1affe46918b09911359241db6', '2021-05-20', '2021-05-20 18:51:50.566160', '{}', 'Rack Group 1', 'rack-group-1', 'f0471f313b694d388c8ec39d9590e396', '5c107f979f434bf7a7820622f18a5211', '', 2, 3, 1, 1)`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('a773cac9dc9842228cdfd8c97a67136e', '2021-05-20', '2021-05-20 18:51:52.126952', '{}', 'Rack Group 2', 'rack-group-2', 'f0471f313b694d388c8ec39d9590e396', '5c107f979f434bf7a7820622f18a5211', '', 4, 5, 1, 1)`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('a35a843eb181404bb9da2126c6580977', '2021-05-20', '2021-05-20 18:51:53.706000', '{}', 'Rack Group 3', 'rack-group-3', 'f0471f313b694d388c8ec39d9590e396', '5c107f979f434bf7a7820622f18a5211', '', 6, 7, 1, 1)`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('f09a02c95b064533b823e25374f5962a', '2021-05-20', '2021-05-20 18:52:03.037056', '{}', 'Test Rack Group 4', 'test-rack-group-4', '442bab8b517149ab87207e8fb5ba1569', '6707c20336a2406da6a9d394477f7e8c', '', 2, 3, 2, 1)`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('ecff5b528c5140d4a58f1b24a1c80ebc', '2021-05-20', '2021-05-20 18:52:05.390373', '{}', 'Test Rack Group 5', 'test-rack-group-5', '442bab8b517149ab87207e8fb5ba1569', '6707c20336a2406da6a9d394477f7e8c', '', 4, 5, 2, 1)`,
+			`INSERT INTO dcim_rackgroup (id, created, last_updated, _custom_field_data, name, slug, site_id, parent_id, description, lft, rght, tree_id, level) VALUES ('d31b3772910e4418bdd5725d905e2699', '2021-05-20', '2021-05-20 18:52:07.758547', '{}', 'Test Rack Group 6', 'test-rack-group-6', '442bab8b517149ab87207e8fb5ba1569', '6707c20336a2406da6a9d394477f7e8c', '', 6, 7, 2, 1)`,
+			`INSERT INTO dcim_rack (id,created,last_updated,_custom_field_data,name,_name,facility_id,serial,asset_tag,type,width,u_height,desc_units,outer_width,outer_depth,outer_unit,comments,group_id,role_id,site_id,status_id,tenant_id) VALUES ('abc123',  '2021-05-20', '2021-05-20 18:51:48.150116', '{}', "name", "name", "facility", "serial", "assettag", "type", 1, 1, 1, 1, 1, "outer units", "comment", "6bc0d9b1affe46918b09911359241db6", "role", "f0471f313b694d388c8ec39d9590e396", "status", "tenant")`,
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query: `SELECT 
+                             ((
+                               SELECT COUNT(*)
+                               FROM dcim_rack
+                               WHERE group_id 
+                               IN (
+                                 SELECT m2.id
+                                 FROM dcim_rackgroup m2
+                                 WHERE m2.tree_id = dcim_rackgroup.tree_id
+                                   AND m2.lft BETWEEN dcim_rackgroup.lft
+                                   AND dcim_rackgroup.rght
+                               )
+                             )) AS rack_count,
+                             dcim_rackgroup.id,
+                             dcim_rackgroup._custom_field_data,
+                             dcim_rackgroup.name,
+                             dcim_rackgroup.slug,
+                             dcim_rackgroup.site_id,
+                             dcim_rackgroup.parent_id,
+                             dcim_rackgroup.description,
+                             dcim_rackgroup.lft,
+                             dcim_rackgroup.rght,
+                             dcim_rackgroup.tree_id,
+                             dcim_rackgroup.level 
+                           FROM dcim_rackgroup
+							order by 2 limit 1`,
+				Expected: []sql.Row{{1, "5c107f979f434bf7a7820622f18a5211", sql.JSONDocument{Val: map[string]interface{}{}}, "Parent Rack Group 1", "parent-rack-group-1", "f0471f313b694d388c8ec39d9590e396", interface{}(nil), "", uint64(1), uint64(2), uint64(1), uint64(0)}},
+			},
+		},
+	},
+	{
+		Name: "CREATE TABLE SELECT Queries",
+		SetUpScript: []string{
+			`CREATE TABLE t1 (pk int PRIMARY KEY, v1 varchar(10))`,
+			`INSERT INTO t1 VALUES (1,"1"), (2,"2"), (3,"3")`,
+			`CREATE TABLE t2 AS SELECT * FROM t1`,
+			//`CREATE TABLE t3(v0 int) AS SELECT pk FROM t1`, // parser problems
+			`CREATE TABLE t3 AS SELECT pk FROM t1`,
+			`CREATE TABLE t4 AS SELECT pk, v1 FROM t1`,
+			`CREATE TABLE t5 SELECT * FROM t1 ORDER BY pk LIMIT 1`,
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query:    `SELECT * FROM t2`,
+				Expected: []sql.Row{{1, "1"}, {2, "2"}, {3, "3"}},
+			},
+			{
+				Query:    `SELECT * FROM t3`,
+				Expected: []sql.Row{{1}, {2}, {3}},
+			},
+			{
+				Query:    `SELECT * FROM t4`,
+				Expected: []sql.Row{{1, "1"}, {2, "2"}, {3, "3"}},
+			},
+			{
+				Query:    `SELECT * FROM t5`,
+				Expected: []sql.Row{{1, "1"}},
+			},
+			{
+				Query: `CREATE TABLE test SELECT * FROM t1`,
+				Expected: []sql.Row{sql.Row{sql.OkResult{
+					RowsAffected: 3,
+					InsertID:     0,
+					Info:         nil,
+				}}},
+			},
+		},
+	},
+}
+
+var CreateCheckConstraintsScripts = []ScriptTest{
+	{
+		Name: "Run SHOW CREATE TABLE with different types of check constraints",
+		SetUpScript: []string{
+			"CREATE TABLE mytable1(pk int PRIMARY KEY, CONSTRAINT check1 CHECK (pk = 5))",
+			"ALTER TABLE mytable1 ADD CONSTRAINT check11 CHECK (pk < 6)",
+			"CREATE TABLE mytable2(pk int PRIMARY KEY, v int, CONSTRAINT check2 CHECK (v < 5))",
+			"ALTER TABLE mytable2 ADD CONSTRAINT check12 CHECK (pk  + v = 6)",
+			"CREATE TABLE mytable3(pk int PRIMARY KEY, v int, CONSTRAINT check3 CHECK (pk > 2 AND v < 5))",
+			"ALTER TABLE mytable3 ADD CONSTRAINT check13 CHECK (pk BETWEEN 2 AND 100)",
+			"CREATE TABLE mytable4(pk int PRIMARY KEY, v int, CONSTRAINT check4 CHECK (pk > 2 AND v < 5 AND pk < 9))",
+			"CREATE TABLE mytable5(pk int PRIMARY KEY, v int, CONSTRAINT check5 CHECK (pk > 2 OR (v < 5 AND pk < 9)))",
+			"CREATE TABLE mytable6(pk int PRIMARY KEY, v int, CONSTRAINT check6 CHECK (NOT pk))",
+			"CREATE TABLE mytable7(pk int PRIMARY KEY, v int, CONSTRAINT check7 CHECK (pk != v))",
+			"CREATE TABLE mytable8(pk int PRIMARY KEY, v int, CONSTRAINT check8 CHECK (pk > 2 OR v < 5 OR pk < 10))",
+			"CREATE TABLE mytable9(pk int PRIMARY KEY, v int, CONSTRAINT check9 CHECK ((pk + v) / 2 >= 1))",
+			"CREATE TABLE mytable10(pk int PRIMARY KEY, v int, CONSTRAINT check10 CHECK (v < 5) NOT ENFORCED)",
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query: "SHOW CREATE TABLE mytable1",
+				Expected: []sql.Row{
+					{
+						"mytable1",
+						"CREATE TABLE `mytable1` (\n  `pk` int NOT NULL,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check1` CHECK (`pk` = 5),\n" +
+							"  CONSTRAINT `check11` CHECK (`pk` < 6)\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable2",
+				Expected: []sql.Row{
+					{
+						"mytable2",
+						"CREATE TABLE `mytable2` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check2` CHECK (`v` < 5),\n" +
+							"  CONSTRAINT `check12` CHECK ((`pk` + `v`) = 6)\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable3",
+				Expected: []sql.Row{
+					{
+						"mytable3",
+						"CREATE TABLE `mytable3` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check3` CHECK ((`pk` > 2) AND (`v` < 5)),\n" +
+							"  CONSTRAINT `check13` CHECK (`pk` BETWEEN 2 AND 100)\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable4",
+				Expected: []sql.Row{
+					{
+						"mytable4",
+						"CREATE TABLE `mytable4` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check4` CHECK (((`pk` > 2) AND (`v` < 5)) AND (`pk` < 9))\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable5",
+				Expected: []sql.Row{
+					{
+						"mytable5",
+						"CREATE TABLE `mytable5` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check5` CHECK ((`pk` > 2) OR ((`v` < 5) AND (`pk` < 9)))\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable6",
+				Expected: []sql.Row{
+					{
+						"mytable6",
+						"CREATE TABLE `mytable6` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check6` CHECK (NOT(`pk`))\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable7",
+				Expected: []sql.Row{
+					{
+						"mytable7",
+						"CREATE TABLE `mytable7` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check7` CHECK (NOT((`pk` = `v`)))\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable8",
+				Expected: []sql.Row{
+					{
+						"mytable8",
+						"CREATE TABLE `mytable8` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check8` CHECK (((`pk` > 2) OR (`v` < 5)) OR (`pk` < 10))\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable9",
+				Expected: []sql.Row{
+					{
+						"mytable9",
+						"CREATE TABLE `mytable9` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check9` CHECK (((`pk` + `v`) / 2) >= 1)\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+			{
+				Query: "SHOW CREATE TABLE mytable10",
+				Expected: []sql.Row{
+					{
+						"mytable10",
+						"CREATE TABLE `mytable10` (\n  `pk` int NOT NULL,\n" +
+							"  `v` int,\n" +
+							"  PRIMARY KEY (`pk`),\n" +
+							"  CONSTRAINT `check10` CHECK (`v` < 5) /*!80016 NOT ENFORCED */\n" +
+							") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+					},
+				},
+			},
+		},
+	},
+	{
+		Name: "Create a table with a check and validate that it appears in check_constraints and table_constraints",
+		SetUpScript: []string{
+			"CREATE TABLE mytable (pk int primary key, test_score int, height int, CONSTRAINT mycheck CHECK (test_score >= 50), CONSTRAINT hcheck CHECK (height < 10), CONSTRAINT vcheck CHECK (height > 0))",
+		},
+		Assertions: []ScriptTestAssertion{
+			{
+				Query: "SELECT * from information_schema.check_constraints where constraint_name IN ('mycheck', 'hcheck') ORDER BY constraint_name",
+				Expected: []sql.Row{
+					{"def", "mydb", "hcheck", "(height < 10)"},
+					{"def", "mydb", "mycheck", "(test_score >= 50)"},
+				},
+			},
+			{
+				Query: "SELECT * FROM information_schema.table_constraints where table_name='mytable' ORDER BY constraint_type,constraint_name",
+				Expected: []sql.Row{
+					{"def", "mydb", "hcheck", "mydb", "mytable", "CHECK", "YES"},
+					{"def", "mydb", "mycheck", "mydb", "mytable", "CHECK", "YES"},
+					{"def", "mydb", "vcheck", "mydb", "mytable", "CHECK", "YES"},
+					{"def", "mydb", "PRIMARY", "mydb", "mytable", "PRIMARY KEY", "YES"},
+				},
 			},
 		},
 	},

@@ -118,7 +118,7 @@ func (in *InTuple) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 }
 
 // WithChildren implements the Expression interface.
-func (in *InTuple) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (in *InTuple) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 2 {
 		return nil, sql.ErrInvalidChildrenNumber.New(in, len(children), 2)
 	}
@@ -126,11 +126,11 @@ func (in *InTuple) WithChildren(children ...sql.Expression) (sql.Expression, err
 }
 
 func (in *InTuple) String() string {
-	return fmt.Sprintf("%s IN %s", in.Left(), in.Right())
+	return fmt.Sprintf("(%s IN %s)", in.Left(), in.Right())
 }
 
 func (in *InTuple) DebugString() string {
-	return fmt.Sprintf("%s IN %s", sql.DebugString(in.Left()), sql.DebugString(in.Right()))
+	return fmt.Sprintf("(%s IN %s)", sql.DebugString(in.Left()), sql.DebugString(in.Right()))
 }
 
 // Children implements the Expression interface.

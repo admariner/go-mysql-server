@@ -16,6 +16,7 @@ package analyzer
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/dolthub/vitess/go/vt/sqlparser"
 
@@ -138,6 +139,10 @@ func loadChecks(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.No
 		case *plan.Update:
 			rtable := getResolvedTable(node)
 
+			if rtable == nil {
+				return node, nil
+			}
+
 			table, ok := rtable.Table.(sql.CheckTable)
 			if !ok {
 				return node, nil
@@ -149,6 +154,50 @@ func loadChecks(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.No
 			if err != nil {
 				return nil, err
 			}
+
+			return &nn, nil
+		case *plan.ShowCreateTable:
+			rtable := getResolvedTable(node)
+
+			if rtable == nil {
+				return node, nil
+			}
+
+			table, ok := rtable.Table.(sql.CheckTable)
+			if !ok {
+				return node, nil
+			}
+
+			var err error
+			nn := *node
+			checks, err := loadChecksFromTable(ctx, table)
+			if err != nil {
+				return nil, err
+			}
+
+			transformedChecks := make(sql.CheckConstraints, len(checks))
+
+			for i, check := range checks {
+				newExpr, err := expression.TransformUp(ctx, check.Expr, func(e sql.Expression) (sql.Expression, error) {
+					if t, ok := e.(*expression.UnresolvedColumn); ok {
+						name := t.Name()
+						strings.Replace(name, "`", "", -1) // remove any preexisting backticks
+
+						return expression.NewUnresolvedColumn(fmt.Sprintf("`%s`", name)), nil
+					}
+
+					return e, nil
+				})
+
+				if err != nil {
+					return nil, err
+				}
+
+				check.Expr = newExpr
+				transformedChecks[i] = check
+			}
+
+			nn.Checks = transformedChecks
 
 			return &nn, nil
 

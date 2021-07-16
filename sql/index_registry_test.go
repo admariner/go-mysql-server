@@ -283,7 +283,7 @@ func TestLoadIndexes(t *testing.T) {
 	registry.RegisterIndexDriver(d1)
 	registry.RegisterIndexDriver(d2)
 
-	dbs := Databases{
+	dbs := []Database{
 		dummyDB{
 			name: "db1",
 			tables: map[string]Table{
@@ -331,7 +331,7 @@ func TestLoadOutdatedIndexes(t *testing.T) {
 	registry := NewIndexRegistry()
 	registry.RegisterIndexDriver(d)
 
-	dbs := Databases{
+	dbs := []Database{
 		dummyDB{
 			name: "db1",
 			tables: map[string]Table{
@@ -444,7 +444,7 @@ var _ Expression = (*dummyExpr)(nil)
 
 func (dummyExpr) Children() []Expression                  { return nil }
 func (dummyExpr) Eval(*Context, Row) (interface{}, error) { panic("not implemented") }
-func (e dummyExpr) WithChildren(children ...Expression) (Expression, error) {
+func (e dummyExpr) WithChildren(ctx *Context, children ...Expression) (Expression, error) {
 	return e, nil
 }
 func (e dummyExpr) String() string { return fmt.Sprintf("dummyExpr{%d, %s}", e.index, e.colName) }

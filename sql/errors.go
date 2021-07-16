@@ -81,10 +81,11 @@ var (
 	ErrDuplicateAliasOrTable = errors.NewKind("Not unique table/alias: %s")
 
 	// ErrPrimaryKeyViolation is returned when a primary key constraint is violated
-	// TODO: This should be a ErDupEntry instead
-	ErrPrimaryKeyViolation = errors.NewKind("duplicate primary key given: %s")
+	// This is meant to wrap a sql.UniqueKey error, which provides the key string
+	ErrPrimaryKeyViolation = errors.NewKind("duplicate primary key given")
 
 	// ErrUniqueKeyViolation is returned when a unique key constraint is violated
+	// This is meant to wrap a sql.UniqueKey error, which provides the key string
 	ErrUniqueKeyViolation = errors.NewKind("duplicate unique key given")
 
 	// ErrMisusedAlias is returned when a alias is defined and used in the same projection.
@@ -273,6 +274,25 @@ var (
 
 	// ErrDuplicateEntry is returns when a duplicate entry is placed on an index such as a UNIQUE or a Primary Key.
 	ErrDuplicateEntry = errors.NewKind("Duplicate entry for key '%s'")
+
+	// ErrInvalidArgument is returned when an argument to a function is invalid.
+	ErrInvalidArgument = errors.NewKind("Incorrect arguments to %s")
+
+	// ErrSavepointDoesNotExist is returned when a RELEASE SAVEPOINT or ROLLBACK TO SAVEPOINT statement references a
+	// non-existent savepoint identifier
+	ErrSavepointDoesNotExist = errors.NewKind("SAVEPOINT %s does not exist")
+
+	// ErrTableCreatedNotFound is thrown when an integrator attempts to create a temporary tables without temporary table
+	// support.
+	ErrTemporaryTableNotSupported = errors.NewKind("database does not support temporary tables")
+
+	// ErrInvalidSyntax is returned for syntax errors that aren't picked up by the parser, e.g. the wrong type of
+	// expression used in part of statement.
+	ErrInvalidSyntax = errors.NewKind("Invalid syntax: %s")
+
+	// ErrTableCopyingNotSupported is returned when a table invokes the TableCopierDatabase interface's
+	// CopyTableData method without supporting the interface
+	ErrTableCopyingNotSupported = errors.NewKind("error: Table copying not supported")
 )
 
 func CastSQLError(err error) (*mysql.SQLError, bool) {
@@ -309,6 +329,8 @@ func CastSQLError(err error) (*mysql.SQLError, bool) {
 		code = mysql.ERRowIsReferenced2 // test with mysql returns 1451 vs 1215
 	case ErrDuplicateEntry.Is(err):
 		code = mysql.ERDupEntry
+	case ErrInvalidJSONText.Is(err):
+		code = 3141 // TODO: Needs to be added to vitess
 	default:
 		code = mysql.ERUnknownError
 	}
@@ -337,9 +359,5 @@ func NewUniqueKeyErr(keyStr string, isPK bool, existing Row) error {
 }
 
 func (ue UniqueKeyError) Error() string {
-	if ue.IsPK {
-		return fmt.Sprintf("duplicate primary key given: %s", ue.keyStr)
-	} else {
-		return fmt.Sprintf("duplicate unique key given: %s", ue.keyStr)
-	}
+	return fmt.Sprintf("%s", ue.keyStr)
 }

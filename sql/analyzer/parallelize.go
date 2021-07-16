@@ -36,7 +36,7 @@ func shouldParallelize(node sql.Node, scope *Scope) bool {
 	}
 
 	// Do not try to parallelize DDL or descriptive operations
-	return !plan.IsDdlNode(node)
+	return !plan.IsNoRowNode(node)
 }
 
 func parallelize(ctx *sql.Context, a *Analyzer, node sql.Node, scope *Scope) (sql.Node, error) {
@@ -105,8 +105,7 @@ func isParallelizable(node sql.Node) bool {
 		switch node := node.(type) {
 		// These are the only unary nodes that can be parallelized. Any other
 		// unary nodes will not.
-		case *plan.TableAlias,
-			*plan.Exchange:
+		case *plan.TableAlias, *plan.Exchange:
 		// Some nodes may have subquery expressions that make them unparallelizable
 		case *plan.Project, *plan.Filter:
 			for _, e := range node.(sql.Expressioner).Expressions() {

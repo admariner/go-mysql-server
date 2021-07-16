@@ -27,10 +27,35 @@ func resolveSubqueries(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) 
 	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
 		switch n := n.(type) {
 		case *plan.SubqueryAlias:
-			a.Log("found subquery %q with child of type %T", n.Name(), n.Child)
-
 			// subqueries do not have access to outer scope
-			child, err := a.Analyze(ctx, n.Child, nil)
+			child, err := a.analyzeThroughBatch(ctx, n.Child, nil, "default-rules")
+			if err != nil {
+				return nil, err
+			}
+
+			if len(n.Columns) > 0 {
+				schemaLen := schemaLength(n.Child)
+				if schemaLen != len(n.Columns) {
+					return nil, sql.ErrColumnCountMismatch.New()
+				}
+			}
+
+			return n.WithChildren(stripQueryProcess(child))
+		default:
+			return n, nil
+		}
+	})
+}
+
+func finalizeSubqueries(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
+	span, ctx := ctx.Span("finalize_subqueries")
+	defer span.Finish()
+
+	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
+		switch n := n.(type) {
+		case *plan.SubqueryAlias:
+			// subqueries do not have access to outer scope
+			child, err := a.analyzeStartingAtBatch(ctx, n.Child, nil, "default-rules")
 			if err != nil {
 				return nil, err
 			}
@@ -69,7 +94,7 @@ func flattenTableAliases(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope
 }
 
 func resolveSubqueryExpressions(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
-	return plan.TransformExpressionsUpWithNode(n, func(n sql.Node, e sql.Expression) (sql.Expression, error) {
+	return plan.TransformExpressionsUpWithNode(ctx, n, func(n sql.Node, e sql.Expression) (sql.Expression, error) {
 		s, ok := e.(*plan.Subquery)
 		// We always analyze subquery expressions even if they are resolved, since other transformations to the surrounding
 		// query might cause them to need to shift their field indexes.
@@ -102,11 +127,20 @@ func resolveSubqueryExpressions(ctx *sql.Context, a *Analyzer, n sql.Node, scope
 // Something similar happens in the trackProcess analyzer step, but we can't always wait that long to get rid of the
 // QueryProcess node.
 // TODO: instead of stripping this node off after analysis, it would be better to just not add it in the first place.
-func stripQueryProcess(analyzed sql.Node) sql.Node {
-	if qp, ok := analyzed.(*plan.QueryProcess); ok {
-		analyzed = qp.Child
+func stripQueryProcess(n sql.Node) sql.Node {
+	nodeIsPassthrough := true
+	for nodeIsPassthrough {
+		switch tn := n.(type) {
+		case *plan.QueryProcess:
+			n = tn.Child
+		case *plan.StartTransaction:
+			n = tn.Child
+		default:
+			nodeIsPassthrough = false
+		}
 	}
-	return analyzed
+
+	return n
 }
 
 func exprIsCacheable(expr sql.Expression, lowestAlloewdIdx int) bool {
@@ -169,7 +203,7 @@ func isDeterminstic(n sql.Node) bool {
 // subquery as cacheable if so. Caching subquery results is safe in the case that no outer scope columns are referenced,
 // and if all expressions in the subquery are deterministic.
 func cacheSubqueryResults(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
-	return plan.TransformExpressionsUpWithNode(n, func(n sql.Node, e sql.Expression) (sql.Expression, error) {
+	return plan.TransformExpressionsUpWithNode(ctx, n, func(n sql.Node, e sql.Expression) (sql.Expression, error) {
 		s, ok := e.(*plan.Subquery)
 		if !ok || !s.Resolved() {
 			return e, nil

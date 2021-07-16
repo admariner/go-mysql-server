@@ -149,7 +149,7 @@ func TestHandlerKill(t *testing.T) {
 		e,
 		NewSessionManager(
 			func(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, *sql.IndexRegistry, *sql.ViewRegistry, error) {
-				return sql.NewSession(addr, "", "", conn.ConnectionID), sql.NewIndexRegistry(), sql.NewViewRegistry(), nil
+				return sql.NewSession(addr, sql.Client{Capabilities: conn.Capabilities}, conn.ConnectionID), sql.NewIndexRegistry(), sql.NewViewRegistry(), nil
 			},
 			opentracing.NoopTracer{},
 			func(db string) bool { return db == "test" },
@@ -181,7 +181,7 @@ func TestHandlerKill(t *testing.T) {
 	require.NoError(err)
 	ctx1, err := handler.sm.NewContextWithQuery(conn1, "SELECT 1")
 	require.NoError(err)
-	ctx1, err = handler.e.Catalog.AddProcess(ctx1, sql.QueryProcess, "SELECT 1")
+	ctx1, err = handler.e.Catalog.AddProcess(ctx1, "SELECT 1")
 	require.NoError(err)
 
 	err = handler.ComQuery(conn2, "KILL "+fmt.Sprint(ctx1.ID()), func(res *sqltypes.Result) error {
@@ -423,6 +423,79 @@ func TestBindingsToExprs(t *testing.T) {
 			} else {
 				require.Error(t, err, "%v", res)
 			}
+		})
+	}
+}
+
+// Tests the CLIENT_FOUND_ROWS capabilities flag
+func TestHandlerFoundRowsCapabilities(t *testing.T) {
+	e := setupMemDB(require.New(t))
+	dummyConn := &mysql.Conn{ConnectionID: 1}
+
+	// Set the capabilities to include found rows
+	dummyConn.Capabilities = mysql.CapabilityClientFoundRows
+
+	// Setup the handler
+	handler := NewHandler(
+		e,
+		NewSessionManager(
+			testSessionBuilder,
+			opentracing.NoopTracer{},
+			func(db string) bool { return db == "test" },
+			sql.NewMemoryManager(nil),
+			"foo",
+		),
+		0,
+	)
+
+	tests := []struct {
+		name                 string
+		handler              *Handler
+		conn                 *mysql.Conn
+		query                string
+		expectedRowsAffected uint64
+	}{
+		{
+			name:                 "Update query should return number of rows matched instead of rows affected",
+			handler:              handler,
+			conn:                 dummyConn,
+			query:                "UPDATE test set c1 = c1 where c1 < 10",
+			expectedRowsAffected: uint64(10),
+		},
+		{
+			name:                 "INSERT ON UPDATE returns +1 for every row that already exists",
+			handler:              handler,
+			conn:                 dummyConn,
+			query:                "INSERT INTO test VALUES (1), (2), (3) ON DUPLICATE KEY UPDATE c1=c1",
+			expectedRowsAffected: uint64(3),
+		},
+		{
+			name:                 "SQL_CALC_ROWS should not affect CLIENT_FOUND_ROWS output",
+			handler:              handler,
+			conn:                 dummyConn,
+			query:                "SELECT SQL_CALC_FOUND_ROWS * FROM test LIMIT 5",
+			expectedRowsAffected: uint64(5),
+		},
+		{
+			name:                 "INSERT returns rows affected",
+			handler:              handler,
+			conn:                 dummyConn,
+			query:                "INSERT into test VALUES (10000),(10001),(10002)",
+			expectedRowsAffected: uint64(3),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler.ComInitDB(test.conn, "test")
+			var rowsAffected uint64
+			err := handler.ComQuery(test.conn, test.query, func(res *sqltypes.Result) error {
+				rowsAffected = uint64(res.RowsAffected)
+				return nil
+			})
+
+			require.NoError(t, err)
+			require.Equal(t, test.expectedRowsAffected, rowsAffected)
 		})
 	}
 }

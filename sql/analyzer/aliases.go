@@ -50,6 +50,10 @@ func getTableAliases(n sql.Node, scope *Scope) (TableAliases, error) {
 	var passAliases TableAliases
 	var aliasFn func(node sql.Node) bool
 	var analysisErr error
+	var recScope *Scope
+	if scope != nil {
+		recScope = recScope.withMemos(scope.memos)
+	}
 
 	aliasFn = func(node sql.Node) bool {
 		if node == nil {
@@ -62,7 +66,7 @@ func getTableAliases(n sql.Node, scope *Scope) (TableAliases, error) {
 
 		if at, ok := node.(*plan.TableAlias); ok {
 			switch t := at.Child.(type) {
-			case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.ValueDerivedTable:
+			case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.ValueDerivedTable, *plan.TransformedNamedNode:
 				analysisErr = passAliases.add(at, t.(NameableNode))
 			case *plan.DecoratedNode:
 				rt := getResolvedTable(at.Child)
@@ -88,7 +92,7 @@ func getTableAliases(n sql.Node, scope *Scope) (TableAliases, error) {
 		case *plan.Block:
 			// blocks should not be parsed as a whole, just their statements individually
 			for _, child := range node.Children() {
-				_, analysisErr = getTableAliases(child, scope)
+				_, analysisErr = getTableAliases(child, recScope)
 				if analysisErr != nil {
 					break
 				}
@@ -98,7 +102,7 @@ func getTableAliases(n sql.Node, scope *Scope) (TableAliases, error) {
 			rt := getResolvedTable(node.Destination)
 			analysisErr = passAliases.add(rt, rt)
 			return false
-		case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.ValueDerivedTable:
+		case *plan.ResolvedTable, *plan.SubqueryAlias, *plan.ValueDerivedTable, *plan.TransformedNamedNode:
 			analysisErr = passAliases.add(node.(sql.Nameable), node.(sql.Nameable))
 			return false
 		case *plan.DecoratedNode:
@@ -128,6 +132,7 @@ func getTableAliases(n sql.Node, scope *Scope) (TableAliases, error) {
 		if analysisErr != nil {
 			return nil, analysisErr
 		}
+		recScope = recScope.newScope(scopeNode)
 		aliases.putAll(passAliases)
 	}
 
@@ -165,11 +170,11 @@ func aliasesDefinedInNode(n sql.Node) []string {
 // normalizeExpressions returns the expressions given after normalizing them to replace table and expression aliases
 // with their underlying names. This is necessary to match such expressions against those declared by implementors of
 // various interfaces that declare expressions to handle, such as Index.Expressions(), FilteredTable, etc.
-func normalizeExpressions(tableAliases TableAliases, expr ...sql.Expression) []sql.Expression {
+func normalizeExpressions(ctx *sql.Context, tableAliases TableAliases, expr ...sql.Expression) []sql.Expression {
 	expressions := make([]sql.Expression, len(expr))
 
 	for i, e := range expr {
-		expressions[i] = normalizeExpression(tableAliases, e)
+		expressions[i] = normalizeExpression(ctx, tableAliases, e)
 	}
 
 	return expressions
@@ -178,9 +183,9 @@ func normalizeExpressions(tableAliases TableAliases, expr ...sql.Expression) []s
 // normalizeExpression returns the expression given after normalizing it to replace table aliases with their underlying
 // names. This is necessary to match such expressions against those declared by implementors of various interfaces that
 // declare expressions to handle, such as Index.Expressions(), FilteredTable, etc.
-func normalizeExpression(tableAliases TableAliases, e sql.Expression) sql.Expression {
+func normalizeExpression(ctx *sql.Context, tableAliases TableAliases, e sql.Expression) sql.Expression {
 	// If the query has table aliases, use them to replace any table aliases in column expressions
-	normalized, _ := expression.TransformUp(e, func(e sql.Expression) (sql.Expression, error) {
+	normalized, _ := expression.TransformUp(ctx, e, func(e sql.Expression) (sql.Expression, error) {
 		if field, ok := e.(*expression.GetField); ok {
 			table := field.Table()
 			if rt, ok := tableAliases[table]; ok {

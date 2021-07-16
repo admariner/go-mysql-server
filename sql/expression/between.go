@@ -33,7 +33,11 @@ func NewBetween(val, lower, upper sql.Expression) *Between {
 }
 
 func (b *Between) String() string {
-	return fmt.Sprintf("%s BETWEEN %s AND %s", b.Val, b.Lower, b.Upper)
+	return fmt.Sprintf("(%s BETWEEN %s AND %s)", b.Val, b.Lower, b.Upper)
+}
+
+func (b *Between) DebugString() string {
+	return fmt.Sprintf("(%s BETWEEN %s AND %s)", sql.DebugString(b.Val), sql.DebugString(b.Lower), sql.DebugString(b.Upper))
 }
 
 // Children implements the Expression interface.
@@ -114,7 +118,7 @@ func (b *Between) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 }
 
 // WithChildren implements the Expression interface.
-func (b *Between) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (b *Between) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 3 {
 		return nil, sql.ErrInvalidChildrenNumber.New(b, len(children), 3)
 	}

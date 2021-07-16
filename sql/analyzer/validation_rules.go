@@ -49,7 +49,7 @@ var (
 	ErrValidationOrderBy = errors.NewKind("OrderBy does not support aggregation expressions")
 	// ErrValidationGroupBy is returned when the aggregation expression does not
 	// appear in the grouping columns.
-	ErrValidationGroupBy = errors.NewKind("GroupBy aggregate expression '%v' doesn't appear in the grouping columns")
+	ErrValidationGroupBy = errors.NewKind("expression '%v' doesn't appear in the group by expressions")
 	// ErrValidationSchemaSource is returned when there is any column source
 	// that does not match the table name.
 	ErrValidationSchemaSource = errors.NewKind("one or more schema sources are empty")
@@ -88,6 +88,9 @@ var (
 	ErrUnionSchemasMatch = errors.NewKind(
 		"the schema of the left side of union does not match the right side, expected %s to match %s",
 	)
+
+	// ErrReadOnlyDatabase is returned when a write is attempted to a ReadOnlyDatabse.
+	ErrReadOnlyDatabase = errors.NewKind("Database %s is read-only.")
 )
 
 // DefaultValidationRules to apply while analyzing nodes.
@@ -103,6 +106,60 @@ var DefaultValidationRules = []Rule{
 	{validateExplodeUsageRule, validateExplodeUsage},
 	{validateSubqueryColumnsRule, validateSubqueryColumns},
 	{validateUnionSchemasMatchRule, validateUnionSchemasMatch},
+}
+
+// validateLimitAndOffset ensures that only integer literals are used for limit and offset values
+func validateLimitAndOffset(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
+	return plan.TransformUp(n, func(n sql.Node) (sql.Node, error) {
+		switch n := n.(type) {
+		case *plan.Limit:
+			switch e := n.Limit.(type) {
+			case *expression.Literal:
+				if !sql.IsInteger(e.Type()) {
+					return nil, sql.ErrInvalidType.New(e.Type().String())
+				}
+				i, err := e.Eval(ctx, nil)
+				if err != nil {
+					return nil, err
+				}
+
+				i64, err := sql.Int64.Convert(i)
+				if err != nil {
+					return nil, err
+				}
+				if i64.(int64) < 0 {
+					return nil, sql.ErrInvalidSyntax.New("negative limit")
+				}
+			default:
+				return nil, sql.ErrInvalidType.New(e.Type().String())
+			}
+			return n, nil
+		case *plan.Offset:
+			switch e := n.Offset.(type) {
+			case *expression.Literal:
+				if !sql.IsInteger(e.Type()) {
+					return nil, sql.ErrInvalidType.New(e.Type().String())
+				}
+				i, err := e.Eval(ctx, nil)
+				if err != nil {
+					return nil, err
+				}
+
+				i64, err := sql.Int64.Convert(i)
+				if err != nil {
+					return nil, err
+				}
+				if i64.(int64) < 0 {
+					return nil, sql.ErrInvalidSyntax.New("negative offset")
+				}
+			default:
+				return nil, sql.ErrInvalidType.New(e.Type().String())
+			}
+			return n, nil
+		default:
+			return n, nil
+		}
+	})
 }
 
 func validateIsResolved(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
@@ -174,17 +231,14 @@ func validateGroupBy(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (s
 			return n, nil
 		}
 
-		var validAggs []string
+		var groupBys []string
 		for _, expr := range n.GroupByExprs {
-			validAggs = append(validAggs, expr.String())
+			groupBys = append(groupBys, expr.String())
 		}
 
-		// TODO: validate columns inside aggregations
-		// and allow any kind of expression that make use of the grouping
-		// columns.
 		for _, expr := range n.SelectedExprs {
 			if _, ok := expr.(sql.Aggregation); !ok {
-				if !isValidAgg(validAggs, expr) {
+				if !expressionReferencesOnlyGroupBys(groupBys, expr) {
 					return nil, ErrValidationGroupBy.New(expr.String())
 				}
 			}
@@ -196,15 +250,35 @@ func validateGroupBy(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (s
 	return n, nil
 }
 
-func isValidAgg(validAggs []string, expr sql.Expression) bool {
-	switch expr := expr.(type) {
-	case sql.Aggregation:
-		return true
-	case *expression.Alias:
-		return stringContains(validAggs, expr.String()) || isValidAgg(validAggs, expr.Child)
-	default:
-		return stringContains(validAggs, expr.String())
-	}
+func expressionReferencesOnlyGroupBys(groupBys []string, expr sql.Expression) bool {
+	valid := true
+	sql.Inspect(expr, func(expr sql.Expression) bool {
+		switch expr := expr.(type) {
+		case nil, sql.Aggregation, *expression.Literal:
+			return false
+		case *expression.Alias, sql.FunctionExpression:
+			if stringContains(groupBys, expr.String()) {
+				return false
+			}
+			return true
+		// cc: https://dev.mysql.com/doc/refman/8.0/en/group-by-handling.html
+		// Each part of the SelectExpr must refer to the aggregated columns in some way
+		// TODO: this isn't complete, it's overly restrictive. Dependant columns are fine to reference.
+		default:
+			if stringContains(groupBys, expr.String()) {
+				return true
+			}
+
+			if len(expr.Children()) == 0 {
+				valid = false
+				return false
+			}
+
+			return true
+		}
+	})
+
+	return valid
 }
 
 func validateSchemaSource(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
@@ -474,4 +548,74 @@ func stringContains(strs []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func tableColsContains(strs []tableCol, target tableCol) bool {
+	for _, s := range strs {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+// validateReadOnlyDatabase invalidates queries that attempt to write to ReadOnlyDatabases.
+func validateReadOnlyDatabase(ctx *sql.Context, a *Analyzer, n sql.Node, scope *Scope) (sql.Node, error) {
+	valid := true
+	var readOnlyDB sql.ReadOnlyDatabase
+
+	// if a ReadOnlyDatabase is found, invalidate the query
+	readOnlyDBSearch := func(node sql.Node) bool {
+		if rt, ok := node.(*plan.ResolvedTable); ok {
+			if ro, ok := rt.Database.(sql.ReadOnlyDatabase); ok {
+				if ro.IsReadOnly() {
+					readOnlyDB = ro
+					valid = false
+				}
+			}
+		}
+		return valid
+	}
+
+	plan.Inspect(n, func(node sql.Node) bool {
+		switch n := n.(type) {
+		case *plan.DeleteFrom, *plan.Update, *plan.LockTables, *plan.UnlockTables:
+			plan.Inspect(node, readOnlyDBSearch)
+			return false
+
+		case *plan.InsertInto:
+			// ReadOnlyDatabase can be an insertion Source,
+			// only inspect the Destination tree
+			plan.Inspect(n.Destination, readOnlyDBSearch)
+			return false
+
+		case *plan.CreateTable:
+			if ro, ok := n.Database().(sql.ReadOnlyDatabase); ok {
+				if ro.IsReadOnly() {
+					readOnlyDB = ro
+					valid = false
+				}
+			}
+			// "CREATE TABLE ... LIKE ..." and
+			// "CREATE TABLE ... AS ..."
+			// can both use ReadOnlyDatabases as a source,
+			// so don't descend here.
+			return false
+
+		default:
+			// CreateTable is the only DDL node allowed
+			// to contain a ReadOnlyDatabase
+			if plan.IsDDLNode(n) {
+				plan.Inspect(n, readOnlyDBSearch)
+				return false
+			}
+		}
+
+		return valid
+	})
+	if !valid {
+		return nil, ErrReadOnlyDatabase.New(readOnlyDB.Name())
+	}
+
+	return n, nil
 }

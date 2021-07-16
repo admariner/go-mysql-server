@@ -49,7 +49,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER, b TEXT, c DATE, d TIMESTAMP, e VARCHAR(20), f BLOB NOT NULL, g DATETIME, h CHAR(40))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:     "a",
@@ -89,7 +90,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER NOT NULL PRIMARY KEY, b TEXT)`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -107,7 +109,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER NOT NULL PRIMARY KEY COMMENT "hello", b TEXT COMMENT "goodbye")`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -127,7 +130,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER, b TEXT, PRIMARY KEY (a))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -145,7 +149,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER, b TEXT, PRIMARY KEY (a, b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -163,7 +168,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE IF NOT EXISTS t1(a INTEGER, b TEXT, PRIMARY KEY (a, b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		true,
+		plan.IfNotExists,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -181,7 +187,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b INTEGER, INDEX (b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -206,7 +213,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b INTEGER, INDEX idx_name (b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -231,7 +239,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b INTEGER, INDEX idx_name (b) COMMENT 'hi')`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -256,7 +265,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b INTEGER, UNIQUE INDEX (b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -281,7 +291,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b INTEGER, UNIQUE (b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -306,7 +317,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b INTEGER, INDEX (b, a))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -331,7 +343,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b INTEGER, INDEX (b), INDEX (b, a))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -362,7 +375,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b_id INTEGER, FOREIGN KEY (b_id) REFERENCES t0(b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -388,7 +402,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b_id INTEGER, CONSTRAINT fk_name FOREIGN KEY (b_id) REFERENCES t0(b))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -414,7 +429,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b_id INTEGER, FOREIGN KEY (b_id) REFERENCES t0(b) ON UPDATE CASCADE)`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -440,7 +456,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b_id INTEGER, FOREIGN KEY (b_id) REFERENCES t0(b) ON DELETE RESTRICT)`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -466,7 +483,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b_id INTEGER, FOREIGN KEY (b_id) REFERENCES t0(b) ON UPDATE SET NULL ON DELETE NO ACTION)`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -493,7 +511,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b_id INTEGER, c_id BIGINT, FOREIGN KEY (b_id, c_id) REFERENCES t0(b, c))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -524,7 +543,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, b_id INTEGER, c_id BIGINT, CONSTRAINT fk_name FOREIGN KEY (b_id, c_id) REFERENCES t0(b, c) ON UPDATE RESTRICT ON DELETE CASCADE)`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -555,7 +575,8 @@ var fixtures = map[string]sql.Node{
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, CHECK (a > 0))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -583,7 +604,8 @@ CREATE TABLE t4
 );`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t4",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{
 				{
@@ -644,7 +666,8 @@ CREATE TABLE t2
 );`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t2",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{
 				{
@@ -717,7 +740,8 @@ CREATE TABLE t2
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY CHECK (a > 0))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -738,7 +762,8 @@ CREATE TABLE t2
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY, CONSTRAINT ch1 CHECK (a > 0))`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -759,7 +784,8 @@ CREATE TABLE t2
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY CHECK (a > 0) ENFORCED)`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -780,7 +806,8 @@ CREATE TABLE t2
 	`CREATE TABLE t1(a INTEGER PRIMARY KEY CHECK (a > 0) NOT ENFORCED)`: plan.NewCreateTable(
 		sql.UnresolvedDatabase(""),
 		"t1",
-		false,
+		plan.IfNotExistsAbsent,
+		plan.IsTempTableAbsent,
 		&plan.TableSpec{
 			Schema: sql.Schema{{
 				Name:       "a",
@@ -798,6 +825,30 @@ CREATE TABLE t2
 			}},
 		},
 	),
+	`CREATE TEMPORARY TABLE t1(a INTEGER, b TEXT)`: plan.NewCreateTable(
+		sql.UnresolvedDatabase(""),
+		"t1",
+		plan.IfNotExistsAbsent,
+		plan.IsTempTable,
+		&plan.TableSpec{
+			Schema: sql.Schema{{
+				Name:     "a",
+				Type:     sql.Int32,
+				Nullable: true,
+			}, {
+				Name:     "b",
+				Type:     sql.Text,
+				Nullable: true,
+			}},
+		},
+	),
+	`CREATE TEMPORARY TABLE mytable AS SELECT * from othertable`: plan.NewCreateTableSelect(
+		sql.UnresolvedDatabase(""),
+		"mytable",
+		plan.NewProject([]sql.Expression{expression.NewStar()}, plan.NewUnresolvedTable("othertable", "")),
+		&plan.TableSpec{},
+		plan.IfNotExistsAbsent,
+		plan.IsTempTable),
 	`DROP TABLE foo;`: plan.NewDropTable(
 		sql.UnresolvedDatabase(""), false, "foo",
 	),
@@ -1226,7 +1277,7 @@ CREATE TABLE t2
 			}),
 			"a"),
 	),
-	`SELECT column_0 FROM (values row(1,2), row(3,4)) a limit 1`: plan.NewLimit(1,
+	`SELECT column_0 FROM (values row(1,2), row(3,4)) a limit 1`: plan.NewLimit(expression.NewLiteral(int8(1), sql.Int8),
 		plan.NewProject(
 			[]sql.Expression{
 				expression.NewUnresolvedColumn("column_0"),
@@ -1283,7 +1334,7 @@ CREATE TABLE t2
 			plan.NewUnresolvedTable("foo", ""),
 		),
 	),
-	`SELECT foo, bar FROM foo LIMIT 10;`: plan.NewLimit(10,
+	`SELECT foo, bar FROM foo LIMIT 10;`: plan.NewLimit(expression.NewLiteral(int8(10), sql.Int8),
 		plan.NewProject(
 			[]sql.Expression{
 				expression.NewUnresolvedColumn("foo"),
@@ -1302,7 +1353,7 @@ CREATE TABLE t2
 			plan.NewUnresolvedTable("foo", ""),
 		),
 	),
-	`SELECT foo, bar FROM foo WHERE foo = bar LIMIT 10;`: plan.NewLimit(10,
+	`SELECT foo, bar FROM foo WHERE foo = bar LIMIT 10;`: plan.NewLimit(expression.NewLiteral(int8(10), sql.Int8),
 		plan.NewProject(
 			[]sql.Expression{
 				expression.NewUnresolvedColumn("foo"),
@@ -1317,7 +1368,7 @@ CREATE TABLE t2
 			),
 		),
 	),
-	`SELECT foo, bar FROM foo ORDER BY baz DESC LIMIT 1;`: plan.NewLimit(1,
+	`SELECT foo, bar FROM foo ORDER BY baz DESC LIMIT 1;`: plan.NewLimit(expression.NewLiteral(int8(1), sql.Int8),
 		plan.NewSort(
 			[]sql.SortField{{Column: expression.NewUnresolvedColumn("baz"), Order: sql.Descending, NullOrdering: sql.NullsFirst}},
 			plan.NewProject(
@@ -1329,7 +1380,7 @@ CREATE TABLE t2
 			),
 		),
 	),
-	`SELECT foo, bar FROM foo WHERE qux = 1 ORDER BY baz DESC LIMIT 1;`: plan.NewLimit(1,
+	`SELECT foo, bar FROM foo WHERE qux = 1 ORDER BY baz DESC LIMIT 1;`: plan.NewLimit(expression.NewLiteral(int8(1), sql.Int8),
 		plan.NewSort(
 			[]sql.SortField{{Column: expression.NewUnresolvedColumn("baz"), Order: sql.Descending, NullOrdering: sql.NullsFirst}},
 			plan.NewProject(
@@ -1449,6 +1500,9 @@ CREATE TABLE t2
 		expression.NewBindVar("v1"),
 		expression.NewBindVar("v2"),
 	}}), false, []string{"col1", "col2"}, []sql.Expression{}, false),
+	`INSERT INTO t1 VALUES (b'0111')`: plan.NewInsertInto(sql.UnresolvedDatabase(""), plan.NewUnresolvedTable("t1", ""), plan.NewValues([][]sql.Expression{{
+		expression.NewLiteral(uint64(7), sql.Uint64),
+	}}), false, []string{}, []sql.Expression{}, false),
 	`UPDATE t1 SET col1 = ?, col2 = ? WHERE id = ?`: plan.NewUpdate(
 		plan.NewFilter(
 			expression.NewEquals(expression.NewUnresolvedColumn("id"), expression.NewBindVar("v3")),
@@ -1545,8 +1599,8 @@ CREATE TABLE t2
 		},
 		plan.NewUnresolvedTable("foo", ""),
 	),
-	`SELECT foo, bar FROM foo LIMIT 2 OFFSET 5;`: plan.NewLimit(2,
-		plan.NewOffset(5, plan.NewProject(
+	`SELECT foo, bar FROM foo LIMIT 2 OFFSET 5;`: plan.NewLimit(expression.NewLiteral(int8(2), sql.Int8),
+		plan.NewOffset(expression.NewLiteral(int8(5), sql.Int8), plan.NewProject(
 			[]sql.Expression{
 				expression.NewUnresolvedColumn("foo"),
 				expression.NewUnresolvedColumn("bar"),
@@ -1554,8 +1608,8 @@ CREATE TABLE t2
 			plan.NewUnresolvedTable("foo", ""),
 		)),
 	),
-	`SELECT foo, bar FROM foo LIMIT 5,2;`: plan.NewLimit(2,
-		plan.NewOffset(5, plan.NewProject(
+	`SELECT foo, bar FROM foo LIMIT 5,2;`: plan.NewLimit(expression.NewLiteral(int8(2), sql.Int8),
+		plan.NewOffset(expression.NewLiteral(int8(5), sql.Int8), plan.NewProject(
 			[]sql.Expression{
 				expression.NewUnresolvedColumn("foo"),
 				expression.NewUnresolvedColumn("bar"),
@@ -1768,7 +1822,8 @@ CREATE TABLE t2
 	),
 	`SELECT 2 = 2 FROM foo`: plan.NewProject(
 		[]sql.Expression{
-			expression.NewEquals(expression.NewLiteral(int8(2), sql.Int8), expression.NewLiteral(int8(2), sql.Int8)),
+			expression.NewAlias("2 = 2",
+				expression.NewEquals(expression.NewLiteral(int8(2), sql.Int8), expression.NewLiteral(int8(2), sql.Int8))),
 		},
 		plan.NewUnresolvedTable("foo", ""),
 	),
@@ -1922,7 +1977,8 @@ CREATE TABLE t2
 	),
 	`SELECT 1 + 1;`: plan.NewProject(
 		[]sql.Expression{
-			expression.NewPlus(expression.NewLiteral(int8(1), sql.Int8), expression.NewLiteral(int8(1), sql.Int8)),
+			expression.NewAlias("1 + 1",
+				expression.NewPlus(expression.NewLiteral(int8(1), sql.Int8), expression.NewLiteral(int8(1), sql.Int8))),
 		},
 		plan.NewUnresolvedTable("dual", ""),
 	),
@@ -2149,7 +2205,7 @@ CREATE TABLE t2
 		},
 		plan.NewUnresolvedTable("foo", ""),
 	),
-	`SELECT /*+ JOIN_ORDER(a,b) */ * FROM b join a on c = d limit 5`: plan.NewLimit(5,
+	`SELECT /*+ JOIN_ORDER(a,b) */ * FROM b join a on c = d limit 5`: plan.NewLimit(expression.NewLiteral(int8(5), sql.Int8),
 		plan.NewProject(
 			[]sql.Expression{
 				expression.NewStar(),
@@ -2243,11 +2299,8 @@ CREATE TABLE t2
 	`LOCK TABLES foo123 READ`: plan.NewLockTables([]*plan.TableLock{
 		{Table: plan.NewUnresolvedTable("foo123", "")},
 	}),
-	`LOCK TABLES foo f READ`: plan.NewLockTables([]*plan.TableLock{
-		{Table: plan.NewUnresolvedTable("foo", "")},
-	}),
 	`LOCK TABLES foo AS f READ`: plan.NewLockTables([]*plan.TableLock{
-		{Table: plan.NewUnresolvedTable("foo", "")},
+		{Table: plan.NewTableAlias("f", plan.NewUnresolvedTable("foo", ""))},
 	}),
 	`LOCK TABLES foo READ LOCAL`: plan.NewLockTables([]*plan.TableLock{
 		{Table: plan.NewUnresolvedTable("foo", "")},
@@ -2275,9 +2328,9 @@ CREATE TABLE t2
 	`SHOW CREATE SCHEMA foo`:                   plan.NewShowCreateDatabase(sql.UnresolvedDatabase("foo"), false),
 	`SHOW CREATE DATABASE IF NOT EXISTS foo`:   plan.NewShowCreateDatabase(sql.UnresolvedDatabase("foo"), true),
 	`SHOW CREATE SCHEMA IF NOT EXISTS foo`:     plan.NewShowCreateDatabase(sql.UnresolvedDatabase("foo"), true),
-	`SHOW WARNINGS`:                            plan.NewOffset(0, plan.ShowWarnings(sql.NewEmptyContext().Warnings())),
-	`SHOW WARNINGS LIMIT 10`:                   plan.NewLimit(10, plan.NewOffset(0, plan.ShowWarnings(sql.NewEmptyContext().Warnings()))),
-	`SHOW WARNINGS LIMIT 5,10`:                 plan.NewLimit(10, plan.NewOffset(5, plan.ShowWarnings(sql.NewEmptyContext().Warnings()))),
+	`SHOW WARNINGS`:                            plan.NewOffset(expression.NewLiteral(0, sql.Int64), plan.ShowWarnings(sql.NewEmptyContext().Warnings())),
+	`SHOW WARNINGS LIMIT 10`:                   plan.NewLimit(expression.NewLiteral(10, sql.Int64), plan.NewOffset(expression.NewLiteral(0, sql.Int64), plan.ShowWarnings(sql.NewEmptyContext().Warnings()))),
+	`SHOW WARNINGS LIMIT 5,10`:                 plan.NewLimit(expression.NewLiteral(10, sql.Int64), plan.NewOffset(expression.NewLiteral(5, sql.Int64), plan.ShowWarnings(sql.NewEmptyContext().Warnings()))),
 	"SHOW CREATE DATABASE `foo`":               plan.NewShowCreateDatabase(sql.UnresolvedDatabase("foo"), false),
 	"SHOW CREATE SCHEMA `foo`":                 plan.NewShowCreateDatabase(sql.UnresolvedDatabase("foo"), false),
 	"SHOW CREATE DATABASE IF NOT EXISTS `foo`": plan.NewShowCreateDatabase(sql.UnresolvedDatabase("foo"), true),
@@ -2366,7 +2419,13 @@ CREATE TABLE t2
 		),
 		showCollationProjection,
 	),
-	`ROLLBACK`:                               plan.NewRollback(),
+	"BEGIN":                                  plan.NewStartTransaction(""),
+	"START TRANSACTION":                      plan.NewStartTransaction(""),
+	"COMMIT":                                 plan.NewCommit(""),
+	`ROLLBACK`:                               plan.NewRollback(""),
+	"SAVEPOINT abc":                          plan.NewCreateSavepoint("", "abc"),
+	"ROLLBACK TO SAVEPOINT abc":              plan.NewRollbackSavepoint("", "abc"),
+	"RELEASE SAVEPOINT abc":                  plan.NewReleaseSavepoint("", "abc"),
 	"SHOW CREATE TABLE `mytable`":            plan.NewShowCreateTable(plan.NewUnresolvedTable("mytable", ""), false),
 	"SHOW CREATE TABLE mytable":              plan.NewShowCreateTable(plan.NewUnresolvedTable("mytable", ""), false),
 	"SHOW CREATE TABLE mydb.`mytable`":       plan.NewShowCreateTable(plan.NewUnresolvedTable("mytable", "mydb"), false),
@@ -2581,6 +2640,44 @@ CREATE TABLE t2
 		[]sql.Expression{
 			aggregation.NewCountDistinct(expression.NewUnresolvedColumn("i")),
 		},
+		[]sql.Expression{},
+		plan.NewUnresolvedTable("foo", ""),
+	),
+	`SELECT AVG(DISTINCT a) FROM foo`: plan.NewGroupBy(
+		[]sql.Expression{
+			expression.NewAlias("AVG(DISTINCT a)",
+				expression.NewUnresolvedFunction("avg", true, nil, expression.NewDistinctExpression(expression.NewUnresolvedColumn("a")))),
+		},
+		[]sql.Expression{},
+		plan.NewUnresolvedTable("foo", ""),
+	),
+	`SELECT SUM(DISTINCT a*b) FROM foo`: plan.NewGroupBy(
+		[]sql.Expression{
+			expression.NewAlias("SUM(DISTINCT a*b)",
+				expression.NewUnresolvedFunction("sum", true, nil,
+					expression.NewDistinctExpression(
+						expression.NewMult(expression.NewUnresolvedColumn("a"),
+							expression.NewUnresolvedColumn("b")))))},
+		[]sql.Expression{},
+		plan.NewUnresolvedTable("foo", ""),
+	),
+	`SELECT AVG(DISTINCT a / b) FROM foo`: plan.NewGroupBy(
+		[]sql.Expression{
+			expression.NewAlias("AVG(DISTINCT a / b)",
+				expression.NewUnresolvedFunction("avg", true, nil,
+					expression.NewDistinctExpression(
+						expression.NewDiv(expression.NewUnresolvedColumn("a"),
+							expression.NewUnresolvedColumn("b")))))},
+		[]sql.Expression{},
+		plan.NewUnresolvedTable("foo", ""),
+	),
+	`SELECT SUM(DISTINCT POWER(a, 2)) FROM foo`: plan.NewGroupBy(
+		[]sql.Expression{
+			expression.NewAlias("SUM(DISTINCT POWER(a, 2))",
+				expression.NewUnresolvedFunction("sum", true, nil,
+					expression.NewDistinctExpression(
+						expression.NewUnresolvedFunction("power", false, nil,
+							expression.NewUnresolvedColumn("a"), expression.NewLiteral(int8(2), sql.Int8)))))},
 		[]sql.Expression{},
 		plan.NewUnresolvedTable("foo", ""),
 	),
@@ -2822,6 +2919,22 @@ CREATE TABLE t2
 			plan.NewProject(
 				[]sql.Expression{expression.NewStar()},
 				plan.NewUnresolvedTable("foo", ""),
+			),
+		),
+		false,
+	),
+	`CREATE VIEW myview AS SELECT AVG(DISTINCT foo) FROM b`: plan.NewCreateView(
+		sql.UnresolvedDatabase(""),
+		"myview",
+		[]string{},
+		plan.NewSubqueryAlias(
+			"myview", "SELECT AVG(DISTINCT foo) FROM b",
+			plan.NewGroupBy(
+				[]sql.Expression{
+					expression.NewUnresolvedFunction("avg", true, nil, expression.NewDistinctExpression(expression.NewUnresolvedColumn("foo"))),
+				},
+				[]sql.Expression{},
+				plan.NewUnresolvedTable("b", ""),
 			),
 		),
 		false,
@@ -3095,18 +3208,12 @@ func assertNodesEqualWithDiff(t *testing.T, expected, actual sql.Node) bool {
 
 var fixturesErrors = map[string]*errors.Kind{
 	`SHOW METHEMONEY`:                                         ErrUnsupportedFeature,
-	`LOCK TABLES foo AS READ`:                                 errUnexpectedSyntax,
-	`LOCK TABLES foo LOW_PRIORITY READ`:                       errUnexpectedSyntax,
-	`SELECT * FROM mytable LIMIT -100`:                        ErrUnsupportedSyntax,
-	`SELECT * FROM mytable LIMIT 100 OFFSET -1`:               ErrUnsupportedSyntax,
 	`SELECT INTERVAL 1 DAY - '2018-05-01'`:                    ErrUnsupportedSyntax,
 	`SELECT INTERVAL 1 DAY * '2018-05-01'`:                    ErrUnsupportedSyntax,
 	`SELECT '2018-05-01' * INTERVAL 1 DAY`:                    ErrUnsupportedSyntax,
 	`SELECT '2018-05-01' / INTERVAL 1 DAY`:                    ErrUnsupportedSyntax,
 	`SELECT INTERVAL 1 DAY + INTERVAL 1 DAY`:                  ErrUnsupportedSyntax,
 	`SELECT '2018-05-01' + (INTERVAL 1 DAY + INTERVAL 1 DAY)`: ErrUnsupportedSyntax,
-	`SELECT AVG(DISTINCT foo) FROM b`:                         ErrUnsupportedSyntax,
-	`CREATE VIEW myview AS SELECT AVG(DISTINCT foo) FROM b`:   ErrUnsupportedSyntax,
 	"DESCRIBE FORMAT=pretty SELECT * FROM foo":                errInvalidDescribeFormat,
 	`CREATE TABLE test (pk int, primary key(pk, noexist))`:    ErrUnknownIndexColumn,
 	`SELECT a, count(i) over (order by x) FROM foo`:           ErrUnsupportedFeature,
@@ -3122,7 +3229,7 @@ func TestParseErrors(t *testing.T) {
 			ctx := sql.NewEmptyContext()
 			_, err := Parse(ctx, query)
 			require.Error(err)
-			require.True(expectedError.Is(err))
+			require.True(expectedError.Is(err), "Expected %T but got %T", expectedError, err)
 		})
 	}
 }

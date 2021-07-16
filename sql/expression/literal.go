@@ -60,6 +60,8 @@ func (p *Literal) Eval(ctx *sql.Context, row sql.Row) (interface{}, error) {
 
 func (p *Literal) String() string {
 	switch v := p.value.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%d", v)
 	case string:
 		return fmt.Sprintf("%q", v)
 	case []byte:
@@ -90,7 +92,7 @@ func (p *Literal) DebugString() string {
 }
 
 // WithChildren implements the Expression interface.
-func (p *Literal) WithChildren(children ...sql.Expression) (sql.Expression, error) {
+func (p *Literal) WithChildren(ctx *sql.Context, children ...sql.Expression) (sql.Expression, error) {
 	if len(children) != 0 {
 		return nil, sql.ErrInvalidChildrenNumber.New(p, len(children), 0)
 	}
